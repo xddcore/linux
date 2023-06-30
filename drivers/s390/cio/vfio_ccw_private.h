@@ -17,8 +17,6 @@
 #include <linux/eventfd.h>
 #include <linux/workqueue.h>
 #include <linux/vfio_ccw.h>
-#include <linux/vfio.h>
-#include <linux/mdev.h>
 #include <asm/crw.h>
 #include <asm/debug.h>
 
@@ -69,10 +67,12 @@ struct vfio_ccw_crw {
 
 /**
  * struct vfio_ccw_private
- * @vdev: Embedded VFIO device
  * @sch: pointer to the subchannel
  * @state: internal state of the device
  * @completion: synchronization helper of the I/O completion
+ * @avail: available for creating a mediated device
+ * @mdev: pointer to the mediated device
+ * @nb: notifier for vfio events
  * @io_region: MMIO region to input/output I/O arguments/results
  * @io_mutex: protect against concurrent update of I/O regions
  * @region: additional regions for other subchannel operations
@@ -84,18 +84,15 @@ struct vfio_ccw_crw {
  * @irb: irb info received from interrupt
  * @scsw: scsw info
  * @io_trigger: eventfd ctx for signaling userspace I/O results
- * @crw_trigger: eventfd ctx for signaling userspace CRW information
- * @req_trigger: eventfd ctx for signaling userspace to return device
  * @io_work: work for deferral process of I/O handling
- * @crw_work: work for deferral process of CRW handling
- * @release_comp: synchronization helper for vfio device release
- * @parent: parent data structures for mdevs created
  */
 struct vfio_ccw_private {
-	struct vfio_device vdev;
 	struct subchannel	*sch;
 	int			state;
 	struct completion	*completion;
+	atomic_t		avail;
+	struct mdev_device	*mdev;
+	struct notifier_block	nb;
 	struct ccw_io_region	*io_region;
 	struct mutex		io_mutex;
 	struct vfio_ccw_region *region;
@@ -111,20 +108,14 @@ struct vfio_ccw_private {
 
 	struct eventfd_ctx	*io_trigger;
 	struct eventfd_ctx	*crw_trigger;
-	struct eventfd_ctx	*req_trigger;
 	struct work_struct	io_work;
 	struct work_struct	crw_work;
-
-	struct completion	release_comp;
-
-	struct mdev_parent	parent;
-	struct mdev_type	mdev_type;
-	struct mdev_type	*mdev_types[1];
 } __aligned(8);
 
-int vfio_ccw_sch_quiesce(struct subchannel *sch);
+extern int vfio_ccw_mdev_reg(struct subchannel *sch);
+extern void vfio_ccw_mdev_unreg(struct subchannel *sch);
 
-extern struct mdev_driver vfio_ccw_mdev_driver;
+extern int vfio_ccw_sch_quiesce(struct subchannel *sch);
 
 /*
  * States of the device statemachine.
@@ -147,8 +138,6 @@ enum vfio_ccw_event {
 	VFIO_CCW_EVENT_IO_REQ,
 	VFIO_CCW_EVENT_INTERRUPT,
 	VFIO_CCW_EVENT_ASYNC_REQ,
-	VFIO_CCW_EVENT_OPEN,
-	VFIO_CCW_EVENT_CLOSE,
 	/* last element! */
 	NR_VFIO_CCW_EVENTS
 };
@@ -160,7 +149,7 @@ typedef void (fsm_func_t)(struct vfio_ccw_private *, enum vfio_ccw_event);
 extern fsm_func_t *vfio_ccw_jumptable[NR_VFIO_CCW_STATES][NR_VFIO_CCW_EVENTS];
 
 static inline void vfio_ccw_fsm_event(struct vfio_ccw_private *private,
-				      enum vfio_ccw_event event)
+				     int event)
 {
 	trace_vfio_ccw_fsm_event(private->sch->schid, private->state, event);
 	vfio_ccw_jumptable[private->state][event](private, event);

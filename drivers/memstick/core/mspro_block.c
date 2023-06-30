@@ -133,6 +133,7 @@ struct mspro_devinfo {
 
 struct mspro_block_data {
 	struct memstick_dev   *card;
+	unsigned int          usage_count;
 	unsigned int          caps;
 	struct gendisk        *disk;
 	struct request_queue  *queue;
@@ -177,16 +178,53 @@ static int mspro_block_complete_req(struct memstick_dev *card, int error);
 
 /*** Block device ***/
 
-static void mspro_block_bd_free_disk(struct gendisk *disk)
+static int mspro_block_bd_open(struct block_device *bdev, fmode_t mode)
+{
+	struct gendisk *disk = bdev->bd_disk;
+	struct mspro_block_data *msb = disk->private_data;
+	int rc = -ENXIO;
+
+	mutex_lock(&mspro_block_disk_lock);
+
+	if (msb && msb->card) {
+		msb->usage_count++;
+		if ((mode & FMODE_WRITE) && msb->read_only)
+			rc = -EROFS;
+		else
+			rc = 0;
+	}
+
+	mutex_unlock(&mspro_block_disk_lock);
+
+	return rc;
+}
+
+
+static void mspro_block_disk_release(struct gendisk *disk)
 {
 	struct mspro_block_data *msb = disk->private_data;
 	int disk_id = MINOR(disk_devt(disk)) >> MSPRO_BLOCK_PART_SHIFT;
 
 	mutex_lock(&mspro_block_disk_lock);
-	idr_remove(&mspro_block_disk_idr, disk_id);
-	mutex_unlock(&mspro_block_disk_lock);
 
-	kfree(msb);
+	if (msb) {
+		if (msb->usage_count)
+			msb->usage_count--;
+
+		if (!msb->usage_count) {
+			kfree(msb);
+			disk->private_data = NULL;
+			idr_remove(&mspro_block_disk_idr, disk_id);
+			put_disk(disk);
+		}
+	}
+
+	mutex_unlock(&mspro_block_disk_lock);
+}
+
+static void mspro_block_bd_release(struct gendisk *disk, fmode_t mode)
+{
+	mspro_block_disk_release(disk);
 }
 
 static int mspro_block_bd_getgeo(struct block_device *bdev,
@@ -202,9 +240,10 @@ static int mspro_block_bd_getgeo(struct block_device *bdev,
 }
 
 static const struct block_device_operations ms_block_bdops = {
-	.owner		= THIS_MODULE,
-	.getgeo		= mspro_block_bd_getgeo,
-	.free_disk	= mspro_block_bd_free_disk,
+	.open    = mspro_block_bd_open,
+	.release = mspro_block_bd_release,
+	.getgeo  = mspro_block_bd_getgeo,
+	.owner   = THIS_MODULE
 };
 
 /*** Information ***/
@@ -237,7 +276,7 @@ static const char *mspro_block_attr_name(unsigned char tag)
 		return "attr_devinfo";
 	default:
 		return NULL;
-	}
+	};
 }
 
 typedef ssize_t (*sysfs_show_t)(struct device *dev,
@@ -1166,17 +1205,21 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	if (disk_id < 0)
 		return disk_id;
 
-	rc = blk_mq_alloc_sq_tag_set(&msb->tag_set, &mspro_mq_ops, 2,
-				     BLK_MQ_F_SHOULD_MERGE);
-	if (rc)
+	msb->disk = alloc_disk(1 << MSPRO_BLOCK_PART_SHIFT);
+	if (!msb->disk) {
+		rc = -ENOMEM;
 		goto out_release_id;
-
-	msb->disk = blk_mq_alloc_disk(&msb->tag_set, card);
-	if (IS_ERR(msb->disk)) {
-		rc = PTR_ERR(msb->disk);
-		goto out_free_tag_set;
 	}
-	msb->queue = msb->disk->queue;
+
+	msb->queue = blk_mq_init_sq_queue(&msb->tag_set, &mspro_mq_ops, 2,
+						BLK_MQ_F_SHOULD_MERGE);
+	if (IS_ERR(msb->queue)) {
+		rc = PTR_ERR(msb->queue);
+		msb->queue = NULL;
+		goto out_put_disk;
+	}
+
+	msb->queue->queuedata = card;
 
 	blk_queue_max_hw_sectors(msb->queue, MSPRO_BLOCK_MAX_PAGES);
 	blk_queue_max_segments(msb->queue, MSPRO_BLOCK_MAX_SEGS);
@@ -1185,9 +1228,10 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 
 	msb->disk->major = major;
 	msb->disk->first_minor = disk_id << MSPRO_BLOCK_PART_SHIFT;
-	msb->disk->minors = 1 << MSPRO_BLOCK_PART_SHIFT;
 	msb->disk->fops = &ms_block_bdops;
+	msb->usage_count = 1;
 	msb->disk->private_data = msb;
+	msb->disk->queue = msb->queue;
 
 	sprintf(msb->disk->disk_name, "mspblk%d", disk_id);
 
@@ -1199,19 +1243,12 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	set_capacity(msb->disk, capacity);
 	dev_dbg(&card->dev, "capacity set %ld\n", capacity);
 
-	if (msb->read_only)
-		set_disk_ro(msb->disk, true);
-
-	rc = device_add_disk(&card->dev, msb->disk, NULL);
-	if (rc)
-		goto out_cleanup_disk;
+	device_add_disk(&card->dev, msb->disk, NULL);
 	msb->active = 1;
 	return 0;
 
-out_cleanup_disk:
+out_put_disk:
 	put_disk(msb->disk);
-out_free_tag_set:
-	blk_mq_free_tag_set(&msb->tag_set);
 out_release_id:
 	mutex_lock(&mspro_block_disk_lock);
 	idr_remove(&mspro_block_disk_idr, disk_id);
@@ -1294,6 +1331,7 @@ static void mspro_block_remove(struct memstick_dev *card)
 	del_gendisk(msb->disk);
 	dev_dbg(&card->dev, "mspro block remove\n");
 
+	blk_cleanup_queue(msb->queue);
 	blk_mq_free_tag_set(&msb->tag_set);
 	msb->queue = NULL;
 
@@ -1303,7 +1341,7 @@ static void mspro_block_remove(struct memstick_dev *card)
 	mspro_block_data_clear(msb);
 	mutex_unlock(&mspro_block_disk_lock);
 
-	put_disk(msb->disk);
+	mspro_block_disk_release(msb->disk);
 	memstick_set_drvdata(card, NULL);
 }
 
@@ -1344,8 +1382,7 @@ static int mspro_block_resume(struct memstick_dev *card)
 
 	new_msb->card = card;
 	memstick_set_drvdata(card, new_msb);
-	rc = mspro_block_init_card(card);
-	if (rc)
+	if (mspro_block_init_card(card))
 		goto out_free;
 
 	for (cnt = 0; new_msb->attr_group.attrs[cnt]

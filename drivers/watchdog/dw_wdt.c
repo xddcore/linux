@@ -13,21 +13,22 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/limits.h>
+#include <linux/kernel.h>
 #include <linux/clk.h>
-#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/interrupt.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
 #include <linux/pm.h>
+#include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/watchdog.h>
+#include <linux/debugfs.h>
 
 #define WDOG_CONTROL_REG_OFFSET		    0x00
 #define WDOG_CONTROL_REG_WDT_EN_MASK	    0x01
@@ -218,7 +219,7 @@ static int dw_wdt_set_timeout(struct watchdog_device *wdd, unsigned int top_s)
 
 	/*
 	 * Set the new value in the watchdog.  Some versions of dw_wdt
-	 * have TOPINIT in the TIMEOUT_RANGE register (as per
+	 * have have TOPINIT in the TIMEOUT_RANGE register (as per
 	 * CP_WDT_DUAL_TOP in WDT_COMP_PARAMS_1).  On those we
 	 * effectively get a pat of the watchdog right here.
 	 */
@@ -375,6 +376,7 @@ static irqreturn_t dw_wdt_irq(int irq, void *devid)
 	return IRQ_HANDLED;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int dw_wdt_suspend(struct device *dev)
 {
 	struct dw_wdt *dw_wdt = dev_get_drvdata(dev);
@@ -409,8 +411,9 @@ static int dw_wdt_resume(struct device *dev)
 
 	return 0;
 }
+#endif /* CONFIG_PM_SLEEP */
 
-static DEFINE_SIMPLE_DEV_PM_OPS(dw_wdt_pm_ops, dw_wdt_suspend, dw_wdt_resume);
+static SIMPLE_DEV_PM_OPS(dw_wdt_pm_ops, dw_wdt_suspend, dw_wdt_resume);
 
 /*
  * In case if DW WDT IP core is synthesized with fixed TOP feature disabled the
@@ -711,7 +714,7 @@ static struct platform_driver dw_wdt_driver = {
 	.driver		= {
 		.name	= "dw_wdt",
 		.of_match_table = of_match_ptr(dw_wdt_of_match),
-		.pm	= pm_sleep_ptr(&dw_wdt_pm_ops),
+		.pm	= &dw_wdt_pm_ops,
 	},
 };
 

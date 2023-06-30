@@ -27,7 +27,6 @@
  *
  */
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -240,7 +239,6 @@ static u32 to3264(u32 timing, int bpp, int is64)
 		fallthrough;
 	case 16:
 		timing >>= 1;
-		fallthrough;
 	case 32:
 		break;
 	}
@@ -1510,10 +1508,12 @@ static const struct fb_ops pm2fb_ops = {
 
 
 /**
- * pm2fb_probe - Initialise and allocate resource for PCI device.
+ * Device initialisation
  *
- * @pdev:	PCI device.
- * @id:		PCI device ID.
+ * Initialise and allocate resource for PCI device.
+ *
+ * @param	pdev	PCI device.
+ * @param	id	PCI device ID.
  */
 static int pm2fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
@@ -1521,10 +1521,6 @@ static int pm2fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct fb_info *info;
 	int err;
 	int retval = -ENXIO;
-
-	err = aperture_remove_conflicting_pci_devices(pdev, "pm2fb");
-	if (err)
-		return err;
 
 	err = pci_enable_device(pdev);
 	if (err) {
@@ -1723,9 +1719,11 @@ static int pm2fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 }
 
 /**
- * pm2fb_remove - Release all device resources.
+ * Device removal.
  *
- * @pdev:	PCI device to clean up.
+ * Release all device resources.
+ *
+ * @param	pdev	PCI device to clean up.
  */
 static void pm2fb_remove(struct pci_dev *pdev)
 {
@@ -1767,7 +1765,7 @@ MODULE_DEVICE_TABLE(pci, pm2fb_id_table);
 
 
 #ifndef MODULE
-/*
+/**
  * Parse user specified options.
  *
  * This is, comma-separated options following `video=pm2fb:'.

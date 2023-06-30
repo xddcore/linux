@@ -17,9 +17,6 @@
 DEFINE_SPINLOCK(imx_ccm_lock);
 EXPORT_SYMBOL_GPL(imx_ccm_lock);
 
-bool mcore_booted;
-EXPORT_SYMBOL_GPL(mcore_booted);
-
 void imx_unregister_clocks(struct clk *clks[], unsigned int count)
 {
 	unsigned int i;
@@ -176,8 +173,6 @@ void imx_register_uart_clocks(unsigned int clk_count)
 		int i;
 
 		imx_uart_clocks = kcalloc(clk_count, sizeof(struct clk *), GFP_KERNEL);
-		if (!imx_uart_clocks)
-			return;
 
 		if (!of_stdout)
 			return;
@@ -206,8 +201,9 @@ static int __init imx_clk_disable_uart(void)
 			clk_disable_unprepare(imx_uart_clocks[i]);
 			clk_put(imx_uart_clocks[i]);
 		}
-		kfree(imx_uart_clocks);
 	}
+
+	kfree(imx_uart_clocks);
 
 	return 0;
 }

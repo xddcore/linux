@@ -122,11 +122,8 @@
 struct exar8250;
 
 struct exar8250_platform {
-	int (*rs485_config)(struct uart_port *port, struct ktermios *termios,
-			    struct serial_rs485 *rs485);
-	const struct serial_rs485 *rs485_supported;
+	int (*rs485_config)(struct uart_port *, struct serial_rs485 *);
 	int (*register_gpio)(struct pci_dev *, struct uart_8250_port *);
-	void (*unregister_gpio)(struct uart_8250_port *);
 };
 
 /**
@@ -206,11 +203,11 @@ static int xr17v35x_startup(struct uart_port *port)
 
 static void exar_shutdown(struct uart_port *port)
 {
+	unsigned char lsr;
 	bool tx_complete = false;
 	struct uart_8250_port *up = up_to_u8250p(port);
 	struct circ_buf *xmit = &port->state->xmit;
 	int i = 0;
-	u16 lsr;
 
 	do {
 		lsr = serial_in(up, UART_LSR);
@@ -365,8 +362,9 @@ static void setup_gpio(struct pci_dev *pcidev, u8 __iomem *p)
 	writeb(0x00, p + UART_EXAR_MPIOOD_15_8);
 }
 
-static struct platform_device *__xr17v35x_register_gpio(struct pci_dev *pcidev,
-							const struct software_node *node)
+static void *
+__xr17v35x_register_gpio(struct pci_dev *pcidev,
+			 const struct property_entry *properties)
 {
 	struct platform_device *pdev;
 
@@ -377,7 +375,7 @@ static struct platform_device *__xr17v35x_register_gpio(struct pci_dev *pcidev,
 	pdev->dev.parent = &pcidev->dev;
 	ACPI_COMPANION_SET(&pdev->dev, ACPI_COMPANION(&pcidev->dev));
 
-	if (device_add_software_node(&pdev->dev, node) < 0 ||
+	if (platform_device_add_properties(pdev, properties) < 0 ||
 	    platform_device_add(pdev) < 0) {
 		platform_device_put(pdev);
 		return NULL;
@@ -386,41 +384,23 @@ static struct platform_device *__xr17v35x_register_gpio(struct pci_dev *pcidev,
 	return pdev;
 }
 
-static void __xr17v35x_unregister_gpio(struct platform_device *pdev)
-{
-	device_remove_software_node(&pdev->dev);
-	platform_device_unregister(pdev);
-}
-
 static const struct property_entry exar_gpio_properties[] = {
 	PROPERTY_ENTRY_U32("exar,first-pin", 0),
 	PROPERTY_ENTRY_U32("ngpios", 16),
 	{ }
 };
 
-static const struct software_node exar_gpio_node = {
-	.properties = exar_gpio_properties,
-};
-
-static int xr17v35x_register_gpio(struct pci_dev *pcidev, struct uart_8250_port *port)
+static int xr17v35x_register_gpio(struct pci_dev *pcidev,
+				  struct uart_8250_port *port)
 {
 	if (pcidev->vendor == PCI_VENDOR_ID_EXAR)
 		port->port.private_data =
-			__xr17v35x_register_gpio(pcidev, &exar_gpio_node);
+			__xr17v35x_register_gpio(pcidev, exar_gpio_properties);
 
 	return 0;
 }
 
-static void xr17v35x_unregister_gpio(struct uart_8250_port *port)
-{
-	if (!port->port.private_data)
-		return;
-
-	__xr17v35x_unregister_gpio(port->port.private_data);
-	port->port.private_data = NULL;
-}
-
-static int generic_rs485_config(struct uart_port *port, struct ktermios *termios,
+static int generic_rs485_config(struct uart_port *port,
 				struct serial_rs485 *rs485)
 {
 	bool is_rs485 = !!(rs485->flags & SER_RS485_ENABLED);
@@ -438,21 +418,17 @@ static int generic_rs485_config(struct uart_port *port, struct ktermios *termios
 	if (is_rs485)
 		writeb(UART_EXAR_RS485_DLY(4), p + UART_MSR);
 
+	port->rs485 = *rs485;
+
 	return 0;
 }
 
-static const struct serial_rs485 generic_rs485_supported = {
-	.flags = SER_RS485_ENABLED,
-};
-
 static const struct exar8250_platform exar8250_default_platform = {
 	.register_gpio = xr17v35x_register_gpio,
-	.unregister_gpio = xr17v35x_unregister_gpio,
 	.rs485_config = generic_rs485_config,
-	.rs485_supported = &generic_rs485_supported,
 };
 
-static int iot2040_rs485_config(struct uart_port *port, struct ktermios *termios,
+static int iot2040_rs485_config(struct uart_port *port,
 				struct serial_rs485 *rs485)
 {
 	bool is_rs485 = !!(rs485->flags & SER_RS485_ENABLED);
@@ -482,21 +458,13 @@ static int iot2040_rs485_config(struct uart_port *port, struct ktermios *termios
 	value |= mode;
 	writeb(value, p + UART_EXAR_MPIOLVL_7_0);
 
-	return generic_rs485_config(port, termios, rs485);
+	return generic_rs485_config(port, rs485);
 }
-
-static const struct serial_rs485 iot2040_rs485_supported = {
-	.flags = SER_RS485_ENABLED | SER_RS485_RX_DURING_TX | SER_RS485_TERMINATE_BUS,
-};
 
 static const struct property_entry iot2040_gpio_properties[] = {
 	PROPERTY_ENTRY_U32("exar,first-pin", 10),
 	PROPERTY_ENTRY_U32("ngpios", 1),
 	{ }
-};
-
-static const struct software_node iot2040_gpio_node = {
-	.properties = iot2040_gpio_properties,
 };
 
 static int iot2040_register_gpio(struct pci_dev *pcidev,
@@ -510,16 +478,14 @@ static int iot2040_register_gpio(struct pci_dev *pcidev,
 	writeb(IOT2040_UARTS_GPIO_HI_MODE, p + UART_EXAR_MPIOSEL_15_8);
 
 	port->port.private_data =
-		__xr17v35x_register_gpio(pcidev, &iot2040_gpio_node);
+		__xr17v35x_register_gpio(pcidev, iot2040_gpio_properties);
 
 	return 0;
 }
 
 static const struct exar8250_platform iot2040_platform = {
 	.rs485_config = iot2040_rs485_config,
-	.rs485_supported = &iot2040_rs485_supported,
 	.register_gpio = iot2040_register_gpio,
-	.unregister_gpio = xr17v35x_unregister_gpio,
 };
 
 /*
@@ -537,30 +503,25 @@ static const struct dmi_system_id exar_platforms[] = {
 	{}
 };
 
-static const struct exar8250_platform *exar_get_platform(void)
-{
-	const struct dmi_system_id *dmi_match;
-
-	dmi_match = dmi_first_match(exar_platforms);
-	if (dmi_match)
-		return dmi_match->driver_data;
-
-	return &exar8250_default_platform;
-}
-
 static int
 pci_xr17v35x_setup(struct exar8250 *priv, struct pci_dev *pcidev,
 		   struct uart_8250_port *port, int idx)
 {
-	const struct exar8250_platform *platform = exar_get_platform();
+	const struct exar8250_platform *platform;
+	const struct dmi_system_id *dmi_match;
 	unsigned int offset = idx * 0x400;
 	unsigned int baud = 7812500;
 	u8 __iomem *p;
 	int ret;
 
+	dmi_match = dmi_first_match(exar_platforms);
+	if (dmi_match)
+		platform = dmi_match->driver_data;
+	else
+		platform = &exar8250_default_platform;
+
 	port->port.uartclk = baud * 16;
 	port->port.rs485_config = platform->rs485_config;
-	port->port.rs485_supported = *(platform->rs485_supported);
 
 	/*
 	 * Setup the UART clock for the devices on expansion slot to
@@ -592,11 +553,12 @@ pci_xr17v35x_setup(struct exar8250 *priv, struct pci_dev *pcidev,
 
 static void pci_xr17v35x_exit(struct pci_dev *pcidev)
 {
-	const struct exar8250_platform *platform = exar_get_platform();
 	struct exar8250 *priv = pci_get_drvdata(pcidev);
 	struct uart_8250_port *port = serial8250_get_port(priv->line[0]);
+	struct platform_device *pdev = port->port.private_data;
 
-	platform->unregister_gpio(port);
+	platform_device_unregister(pdev);
+	port->port.private_data = NULL;
 }
 
 static inline void exar_misc_clear(struct exar8250 *priv)

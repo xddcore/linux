@@ -509,33 +509,6 @@ int regulator_map_voltage_pickable_linear_range(struct regulator_dev *rdev,
 EXPORT_SYMBOL_GPL(regulator_map_voltage_pickable_linear_range);
 
 /**
- * regulator_desc_list_voltage_linear - List voltages with simple calculation
- *
- * @desc: Regulator desc for regulator which volatges are to be listed
- * @selector: Selector to convert into a voltage
- *
- * Regulators with a simple linear mapping between voltages and
- * selectors can set min_uV and uV_step in the regulator descriptor
- * and then use this function prior regulator registration to list
- * the voltages. This is useful when voltages need to be listed during
- * device-tree parsing.
- */
-int regulator_desc_list_voltage_linear(const struct regulator_desc *desc,
-				       unsigned int selector)
-{
-	if (selector >= desc->n_voltages)
-		return -EINVAL;
-
-	if (selector < desc->linear_min_sel)
-		return 0;
-
-	selector -= desc->linear_min_sel;
-
-	return desc->min_uV + (desc->uV_step * selector);
-}
-EXPORT_SYMBOL_GPL(regulator_desc_list_voltage_linear);
-
-/**
  * regulator_list_voltage_linear - List voltages with simple calculation
  *
  * @rdev: Regulator device
@@ -548,7 +521,14 @@ EXPORT_SYMBOL_GPL(regulator_desc_list_voltage_linear);
 int regulator_list_voltage_linear(struct regulator_dev *rdev,
 				  unsigned int selector)
 {
-	return regulator_desc_list_voltage_linear(rdev->desc, selector);
+	if (selector >= rdev->desc->n_voltages)
+		return -EINVAL;
+	if (selector < rdev->desc->linear_min_sel)
+		return 0;
+
+	selector -= rdev->desc->linear_min_sel;
+
+	return rdev->desc->min_uV + (rdev->desc->uV_step * selector);
 }
 EXPORT_SYMBOL_GPL(regulator_list_voltage_linear);
 
@@ -669,8 +649,6 @@ int regulator_list_voltage_table(struct regulator_dev *rdev,
 
 	if (selector >= rdev->desc->n_voltages)
 		return -EINVAL;
-	if (selector < rdev->desc->linear_min_sel)
-		return 0;
 
 	return rdev->desc->volt_table[selector];
 }
@@ -948,7 +926,7 @@ int regulator_set_ramp_delay_regmap(struct regulator_dev *rdev, int ramp_delay)
 	int ret;
 	unsigned int sel;
 
-	if (WARN_ON(!rdev->desc->n_ramp_values || !rdev->desc->ramp_delay_table))
+	if (!rdev->desc->n_ramp_values)
 		return -EINVAL;
 
 	ret = find_closest_bigger(ramp_delay, rdev->desc->ramp_delay_table,

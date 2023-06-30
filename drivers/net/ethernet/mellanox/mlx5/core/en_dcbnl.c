@@ -1028,6 +1028,15 @@ void mlx5e_dcbnl_build_netdev(struct net_device *netdev)
 		netdev->dcbnl_ops = &mlx5e_dcbnl_ops;
 }
 
+void mlx5e_dcbnl_build_rep_netdev(struct net_device *netdev)
+{
+	struct mlx5e_priv *priv = netdev_priv(netdev);
+	struct mlx5_core_dev *mdev = priv->mdev;
+
+	if (MLX5_CAP_GEN(mdev, qos))
+		netdev->dcbnl_ops = &mlx5e_dcbnl_ops;
+}
+
 static void mlx5e_dcbnl_query_dcbx_mode(struct mlx5e_priv *priv,
 					enum mlx5_dcbx_oper_mode *mode)
 {
@@ -1135,30 +1144,42 @@ static int mlx5e_update_trust_state_hw(struct mlx5e_priv *priv, void *context)
 	err = mlx5_set_trust_state(priv->mdev, *trust_state);
 	if (err)
 		return err;
-	WRITE_ONCE(priv->dcbx_dp.trust_state, *trust_state);
+	priv->dcbx_dp.trust_state = *trust_state;
 
 	return 0;
 }
 
 static int mlx5e_set_trust_state(struct mlx5e_priv *priv, u8 trust_state)
 {
-	struct mlx5e_params new_params;
-	bool reset = true;
-	int err;
+	struct mlx5e_channels new_channels = {};
+	bool reset_channels = true;
+	bool opened;
+	int err = 0;
 
 	mutex_lock(&priv->state_lock);
 
-	new_params = priv->channels.params;
-	mlx5e_params_calc_trust_tx_min_inline_mode(priv->mdev, &new_params,
+	new_channels.params = priv->channels.params;
+	mlx5e_params_calc_trust_tx_min_inline_mode(priv->mdev, &new_channels.params,
 						   trust_state);
 
-	/* Skip if tx_min_inline is the same */
-	if (new_params.tx_min_inline_mode == priv->channels.params.tx_min_inline_mode)
-		reset = false;
+	opened = test_bit(MLX5E_STATE_OPENED, &priv->state);
+	if (!opened)
+		reset_channels = false;
 
-	err = mlx5e_safe_switch_params(priv, &new_params,
-				       mlx5e_update_trust_state_hw,
-				       &trust_state, reset);
+	/* Skip if tx_min_inline is the same */
+	if (new_channels.params.tx_min_inline_mode ==
+	    priv->channels.params.tx_min_inline_mode)
+		reset_channels = false;
+
+	if (reset_channels) {
+		err = mlx5e_safe_switch_channels(priv, &new_channels,
+						 mlx5e_update_trust_state_hw,
+						 &trust_state);
+	} else {
+		err = mlx5e_update_trust_state_hw(priv, &trust_state);
+		if (!err && !opened)
+			priv->channels.params = new_channels.params;
+	}
 
 	mutex_unlock(&priv->state_lock);
 
@@ -1180,18 +1201,16 @@ static int mlx5e_set_dscp2prio(struct mlx5e_priv *priv, u8 dscp, u8 prio)
 static int mlx5e_trust_initialize(struct mlx5e_priv *priv)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
-	u8 trust_state;
 	int err;
 
-	if (!MLX5_DSCP_SUPPORTED(mdev)) {
-		WRITE_ONCE(priv->dcbx_dp.trust_state, MLX5_QPTS_TRUST_PCP);
-		return 0;
-	}
+	priv->dcbx_dp.trust_state = MLX5_QPTS_TRUST_PCP;
 
-	err = mlx5_query_trust_state(priv->mdev, &trust_state);
+	if (!MLX5_DSCP_SUPPORTED(mdev))
+		return 0;
+
+	err = mlx5_query_trust_state(priv->mdev, &priv->dcbx_dp.trust_state);
 	if (err)
 		return err;
-	WRITE_ONCE(priv->dcbx_dp.trust_state, trust_state);
 
 	if (priv->dcbx_dp.trust_state == MLX5_QPTS_TRUST_PCP && priv->dcbx.dscp_app_cnt) {
 		/*

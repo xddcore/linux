@@ -303,7 +303,7 @@ static int ipheth_get_macaddr(struct ipheth_device *dev)
 			__func__, retval);
 		retval = -EINVAL;
 	} else {
-		eth_hw_addr_set(net, dev->ctrl_buf);
+		memcpy(net->dev_addr, dev->ctrl_buf, ETH_ALEN);
 		retval = 0;
 	}
 
@@ -443,7 +443,7 @@ static int ipheth_probe(struct usb_interface *intf,
 
 	netdev->netdev_ops = &ipheth_netdev_ops;
 	netdev->watchdog_timeo = IPHETH_TX_TIMEOUT;
-	strscpy(netdev->name, "eth%d", sizeof(netdev->name));
+	strcpy(netdev->name, "eth%d");
 
 	dev = netdev_priv(netdev);
 	dev->udev = udev;

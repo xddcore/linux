@@ -18,7 +18,7 @@
 
 &qspi {
 	spi-max-frequency = <96000000>;
-	flash@0 {
+	m25p80@0 {
 		spi-max-frequency = <96000000>;
 	};
 };
@@ -36,14 +36,6 @@
 	pinctrl-2 = <&mmc2_pins_default>;
 };
 
-&emif1 {
-	status = "okay";
-};
-
-&pruss1_mdio {
-	status = "disabled";
-};
-
-&pruss2_mdio {
+&m_can0 {
 	status = "disabled";
 };

@@ -64,6 +64,7 @@ static int ccp_des3_crypt(struct skcipher_request *req, bool encrypt)
 	struct ccp_des3_req_ctx *rctx = skcipher_request_ctx(req);
 	struct scatterlist *iv_sg = NULL;
 	unsigned int iv_len = 0;
+	int ret;
 
 	if (!ctx->u.des3.key_len)
 		return -EINVAL;
@@ -99,7 +100,9 @@ static int ccp_des3_crypt(struct skcipher_request *req, bool encrypt)
 	rctx->cmd.u.des3.src_len = req->cryptlen;
 	rctx->cmd.u.des3.dst = req->dst;
 
-	return ccp_crypto_enqueue_request(&req->base, &rctx->cmd);
+	ret = ccp_crypto_enqueue_request(&req->base, &rctx->cmd);
+
+	return ret;
 }
 
 static int ccp_des3_encrypt(struct skcipher_request *req)

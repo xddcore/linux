@@ -27,6 +27,28 @@
 
 	.text
 
+_GLOBAL(call_do_softirq)
+	mflr	r0
+	std	r0,16(r1)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
+	mr	r1,r3
+	bl	__do_softirq
+	ld	r1,0(r1)
+	ld	r0,16(r1)
+	mtlr	r0
+	blr
+
+_GLOBAL(call_do_irq)
+	mflr	r0
+	std	r0,16(r1)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r4)
+	mr	r1,r4
+	bl	__do_irq
+	ld	r1,0(r1)
+	ld	r0,16(r1)
+	mtlr	r0
+	blr
+
 _GLOBAL(__bswapdi2)
 EXPORT_SYMBOL(__bswapdi2)
 	srdi	r8,r3,32
@@ -255,7 +277,7 @@ _GLOBAL(scom970_write)
  * Physical (hardware) cpu id should be in r3.
  */
 _GLOBAL(kexec_wait)
-	bcl	20,31,$+4
+	bl	1f
 1:	mflr	r5
 	addi	r5,r5,kexec_flag-1b
 
@@ -286,7 +308,7 @@ kexec_flag:
 
 
 #ifdef CONFIG_KEXEC_CORE
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 /*
  * BOOK3E has no real MMU mode, so we have to setup the initial TLB
  * for a core to identity map v:0 to p:0.  This current implementation
@@ -354,7 +376,7 @@ _GLOBAL(kexec_smp_wait)
  * don't overwrite r3 here, it is live for kexec_wait above.
  */
 real_mode:	/* assume normal blr return */
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	/* Create an identity mapping. */
 	b	kexec_create_tlb
 #else
@@ -413,7 +435,7 @@ _GLOBAL(kexec_sequence)
 	lhz	r25,PACAHWCPUID(r13)	/* get our phys cpu from paca */
 
 	/* disable interrupts, we are overwriting kernel data next */
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	wrteei	0
 #else
 	mfmsr	r3
@@ -454,7 +476,7 @@ _GLOBAL(kexec_sequence)
 	beq	1f
 
 	/* clear out hardware hash page table and tlb */
-#ifdef CONFIG_PPC64_ELF_ABI_V1
+#ifdef PPC64_ELF_ABI_v1
 	ld	r12,0(r27)		/* deref function descriptor */
 #else
 	mr	r12,r27

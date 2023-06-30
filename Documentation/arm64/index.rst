@@ -10,7 +10,6 @@ ARM64 Architecture
     acpi_object_usage
     amu
     arm-acpi
-    asymmetric-32bit
     booting
     cpu-feature-registers
     elf_hwcaps
@@ -21,12 +20,9 @@ ARM64 Architecture
     perf
     pointer-authentication
     silicon-errata
-    sme
     sve
     tagged-address-abi
     tagged-pointers
-
-    features
 
 .. only::  subproject and html
 

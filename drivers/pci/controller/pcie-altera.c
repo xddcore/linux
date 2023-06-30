@@ -510,8 +510,10 @@ static int altera_pcie_cfg_read(struct pci_bus *bus, unsigned int devfn,
 	if (altera_pcie_hide_rc_bar(bus, devfn, where))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
 
-	if (!altera_pcie_valid_device(pcie, bus, PCI_SLOT(devfn)))
+	if (!altera_pcie_valid_device(pcie, bus, PCI_SLOT(devfn))) {
+		*value = 0xffffffff;
 		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 
 	return _altera_pcie_cfg_read(pcie, bus->number, devfn, where, size,
 				     value);
@@ -644,7 +646,7 @@ static void altera_pcie_isr(struct irq_desc *desc)
 	struct device *dev;
 	unsigned long status;
 	u32 bit;
-	int ret;
+	u32 virq;
 
 	chained_irq_enter(chip, desc);
 	pcie = irq_desc_get_handler_data(desc);
@@ -656,9 +658,11 @@ static void altera_pcie_isr(struct irq_desc *desc)
 			/* clear interrupts */
 			cra_writel(pcie, 1 << bit, P2A_INT_STATUS);
 
-			ret = generic_handle_domain_irq(pcie->irq_domain, bit);
-			if (ret)
-				dev_err_ratelimited(dev, "unexpected IRQ, INT%d\n", bit);
+			virq = irq_find_mapping(pcie->irq_domain, bit);
+			if (virq)
+				generic_handle_irq(virq);
+			else
+				dev_err(dev, "unexpected IRQ, INT%d\n", bit);
 		}
 	}
 
@@ -765,7 +769,7 @@ static int altera_pcie_probe(struct platform_device *pdev)
 	struct altera_pcie *pcie;
 	struct pci_host_bridge *bridge;
 	int ret;
-	const struct altera_pcie_data *data;
+	const struct of_device_id *match;
 
 	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*pcie));
 	if (!bridge)
@@ -775,11 +779,11 @@ static int altera_pcie_probe(struct platform_device *pdev)
 	pcie->pdev = pdev;
 	platform_set_drvdata(pdev, pcie);
 
-	data = of_device_get_match_data(&pdev->dev);
-	if (!data)
+	match = of_match_device(altera_pcie_of_match, &pdev->dev);
+	if (!match)
 		return -ENODEV;
 
-	pcie->pcie_data = data;
+	pcie->pcie_data = match->data;
 
 	ret = altera_pcie_parse_dt(pcie);
 	if (ret) {

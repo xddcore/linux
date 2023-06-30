@@ -223,7 +223,9 @@ sa1100_rx_chars(struct sa1100_port *sport)
 			 UTSR0_TO_SM(UART_GET_UTSR0(sport));
 	}
 
+	spin_unlock(&sport->port.lock);
 	tty_flip_buffer_push(&sport->port.state->port);
+	spin_lock(&sport->port.lock);
 }
 
 static void sa1100_tx_chars(struct sa1100_port *sport)
@@ -409,7 +411,7 @@ static void sa1100_shutdown(struct uart_port *port)
 
 static void
 sa1100_set_termios(struct uart_port *port, struct ktermios *termios,
-		   const struct ktermios *old)
+		   struct ktermios *old)
 {
 	struct sa1100_port *sport =
 		container_of(port, struct sa1100_port, port);
@@ -695,7 +697,7 @@ void __init sa1100_register_uart(int idx, int port)
 
 
 #ifdef CONFIG_SERIAL_SA1100_CONSOLE
-static void sa1100_console_putchar(struct uart_port *port, unsigned char ch)
+static void sa1100_console_putchar(struct uart_port *port, int ch)
 {
 	struct sa1100_port *sport =
 		container_of(port, struct sa1100_port, port);

@@ -7,7 +7,6 @@
  */
 
 /dts-v1/;
-#include <dt-bindings/leds/common.h>
 #include "exynos4412-midas.dtsi"
 
 / {
@@ -16,7 +15,7 @@
 		i2c10 = &i2c_cm36651;
 	};
 
-	led-controller {
+	aat1290 {
 		compatible = "skyworks,aat1290";
 		flen-gpios = <&gpj1 1 GPIO_ACTIVE_HIGH>;
 		enset-gpios = <&gpj1 2 GPIO_ACTIVE_HIGH>;
@@ -26,9 +25,8 @@
 		pinctrl-1 = <&camera_flash_host>;
 		pinctrl-2 = <&camera_flash_isp>;
 
-		led {
-			function = LED_FUNCTION_FLASH;
-			color = <LED_COLOR_ID_WHITE>;
+		flash-led {
+			label = "flash";
 			led-max-microamp = <520833>;
 			flash-max-microamp = <1012500>;
 			flash-max-timeout-us = <1940000>;
@@ -60,8 +58,9 @@
 		i2c-gpio,delay-us = <2>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+		status = "okay";
 
-		magnetometer@c {
+		ak8975@c {
 			compatible = "asahi-kasei,ak8975";
 			reg = <0x0c>;
 			gpios = <&gpj0 7 GPIO_ACTIVE_HIGH>;
@@ -76,7 +75,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		light-sensor@18 {
+		cm36651@18 {
 			compatible = "capella,cm36651";
 			reg = <0x18>;
 			interrupt-parent = <&gpx0>;
@@ -109,7 +108,7 @@
 		vdd3-supply = <&lcd_vdd3_reg>;
 		vci-supply = <&ldo25_reg>;
 		reset-gpios = <&gpf2 1 GPIO_ACTIVE_HIGH>;
-		power-on-delay = <50>;
+		power-on-delay= <50>;
 		reset-delay = <100>;
 		init-delay = <100>;
 		flip-horizontal;
@@ -134,7 +133,7 @@
 };
 
 &i2c_3 {
-	touchscreen@48 {
+	mms114-touchscreen@48 {
 		compatible = "melfas,mms114";
 		reg = <0x48>;
 		interrupt-parent = <&gpm2>;
@@ -153,13 +152,13 @@
 };
 
 &pinctrl_0 {
-	camera_flash_host: camera-flash-host-pins {
+	camera_flash_host: camera-flash-host {
 		samsung,pins = "gpj1-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-val = <0>;
 	};
 
-	camera_flash_isp: camera-flash-isp-pins {
+	camera_flash_isp: camera-flash-isp {
 		samsung,pins = "gpj1-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-val = <1>;

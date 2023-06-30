@@ -53,13 +53,13 @@
 		pinctrl-0 = <&gpio_keys_pins>;
 		pinctrl-names = "default";
 
-		button-wps {
+		wps {
 			label = "WPS";
 			linux,code = <KEY_WPS_BUTTON>;
 			gpios = <&gpio0 24 GPIO_ACTIVE_LOW>;
 		};
 
-		button-reset {
+		reset {
 			label = "Factory Reset Button";
 			linux,code = <KEY_RESTART>;
 			gpios = <&gpio0 29 GPIO_ACTIVE_LOW>;
@@ -148,8 +148,6 @@
 		reg = <0>;
 		label = "pxa3xx_nand-0";
 		nand-rb = <0>;
-		nand-ecc-strength = <4>;
-		nand-ecc-step-size = <512>;
 		marvell,nand-keep-config;
 		nand-on-flash-bbt;
 	};

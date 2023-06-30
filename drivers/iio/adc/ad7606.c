@@ -12,7 +12,6 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -664,12 +663,12 @@ int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 	}
 
 	st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
-					  indio_dev->name,
-					  iio_device_id(indio_dev));
+					  indio_dev->name, indio_dev->id);
 	if (!st->trig)
 		return -ENOMEM;
 
 	st->trig->ops = &ad7606_trigger_ops;
+	st->trig->dev.parent = dev;
 	iio_trigger_set_drvdata(st->trig, indio_dev);
 	ret = devm_iio_trigger_register(dev, st->trig);
 	if (ret)
@@ -694,7 +693,7 @@ int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_NS_GPL(ad7606_probe, IIO_AD7606);
+EXPORT_SYMBOL_GPL(ad7606_probe);
 
 #ifdef CONFIG_PM_SLEEP
 
@@ -726,7 +725,7 @@ static int ad7606_resume(struct device *dev)
 }
 
 SIMPLE_DEV_PM_OPS(ad7606_pm_ops, ad7606_suspend, ad7606_resume);
-EXPORT_SYMBOL_NS_GPL(ad7606_pm_ops, IIO_AD7606);
+EXPORT_SYMBOL_GPL(ad7606_pm_ops);
 
 #endif
 

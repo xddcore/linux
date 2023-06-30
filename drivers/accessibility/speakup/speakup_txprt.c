@@ -6,7 +6,7 @@
  * Copyright (C) 1998-99  Kirk Reiser.
  * Copyright (C) 2003 David Borowski.
  *
- * specifically written as a driver for the speakup screenreview
+ * specificly written as a driver for the speakup screenreview
  * s not a general device driver.
  */
 #include "spk_priv.h"

@@ -693,9 +693,10 @@ static int stmfts_probe(struct i2c_client *client,
 	 * interrupts. To be on the safe side it's better to not enable
 	 * the interrupts during their request.
 	 */
+	irq_set_status_flags(client->irq, IRQ_NOAUTOEN);
 	err = devm_request_threaded_irq(&client->dev, client->irq,
 					NULL, stmfts_irq_handler,
-					IRQF_ONESHOT | IRQF_NO_AUTOEN,
+					IRQF_ONESHOT,
 					"stmfts_irq", sdata);
 	if (err)
 		return err;
@@ -738,9 +739,11 @@ static int stmfts_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void stmfts_remove(struct i2c_client *client)
+static int stmfts_remove(struct i2c_client *client)
 {
 	pm_runtime_disable(&client->dev);
+
+	return 0;
 }
 
 static int __maybe_unused stmfts_runtime_suspend(struct device *dev)

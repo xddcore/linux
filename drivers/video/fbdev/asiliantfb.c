@@ -29,7 +29,6 @@
  *  more details.
  */
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -111,7 +110,7 @@ static const struct fb_ops asiliantfb_ops = {
 static void asiliant_calc_dclk2(u32 *ppixclock, u8 *dclk2_m, u8 *dclk2_n, u8 *dclk2_div)
 {
 	unsigned pixclock = *ppixclock;
-	unsigned Ftarget;
+	unsigned Ftarget = 1000000 * (1000000 / pixclock);
 	unsigned n;
 	unsigned best_error = 0xffffffff;
 	unsigned best_m = 0xffffffff,
@@ -545,10 +544,6 @@ static int asiliantfb_pci_init(struct pci_dev *dp,
 	unsigned long addr, size;
 	struct fb_info *p;
 	int err;
-
-	err = aperture_remove_conflicting_pci_devices(dp, "asiliantfb");
-	if (err)
-		return err;
 
 	if ((dp->resource[0].flags & IORESOURCE_MEM) == 0)
 		return -ENODEV;

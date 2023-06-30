@@ -14,7 +14,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/pm_domain.h>
 #include <linux/acpi.h>
-#include <linux/sysfs.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -36,7 +35,7 @@ field##_show(struct device *dev, struct device_attribute *attr, char *buf)				\
 	struct sdio_func *func;						\
 									\
 	func = dev_to_sdio_func (dev);					\
-	return sysfs_emit(buf, format_string, args);			\
+	return sprintf(buf, format_string, args);			\
 }									\
 static DEVICE_ATTR_RO(field)
 
@@ -53,9 +52,9 @@ static ssize_t info##num##_show(struct device *dev, struct device_attribute *att
 												\
 	if (num > func->num_info)								\
 		return -ENODATA;								\
-	if (!func->info[num - 1][0])								\
+	if (!func->info[num-1][0])								\
 		return 0;									\
-	return sysfs_emit(buf, "%s\n", func->info[num - 1]);					\
+	return sprintf(buf, "%s\n", func->info[num-1]);						\
 }												\
 static DEVICE_ATTR_RO(info##num)
 
@@ -204,7 +203,7 @@ disable_runtimepm:
 	return ret;
 }
 
-static void sdio_bus_remove(struct device *dev)
+static int sdio_bus_remove(struct device *dev)
 {
 	struct sdio_driver *drv = to_sdio_driver(dev->driver);
 	struct sdio_func *func = dev_to_sdio_func(dev);
@@ -233,6 +232,8 @@ static void sdio_bus_remove(struct device *dev)
 		pm_runtime_put_sync(dev);
 
 	dev_pm_domain_detach(dev, false);
+
+	return 0;
 }
 
 static const struct dev_pm_ops sdio_bus_pm_ops = {

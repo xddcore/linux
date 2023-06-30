@@ -174,14 +174,6 @@ static int buck_set_dvs(const struct regulator_desc *desc,
 		}
 	}
 
-	if (ret == 0) {
-		struct pca9450_regulator_desc *regulator = container_of(desc,
-					struct pca9450_regulator_desc, desc);
-
-		/* Enable DVS control through PMIC_STBY_REQ for this BUCK */
-		ret = regmap_update_bits(regmap, regulator->desc.enable_reg,
-					 BUCK1_DVS_CTRL, BUCK1_DVS_CTRL);
-	}
 	return ret;
 }
 
@@ -710,7 +702,6 @@ static int pca9450_i2c_probe(struct i2c_client *i2c,
 	struct regulator_config config = { };
 	struct pca9450 *pca9450;
 	unsigned int device_id, i;
-	unsigned int reset_ctrl;
 	int ret;
 
 	if (!i2c->irq) {
@@ -811,28 +802,12 @@ static int pca9450_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 
-	if (of_property_read_bool(i2c->dev.of_node, "nxp,wdog_b-warm-reset"))
-		reset_ctrl = WDOG_B_CFG_WARM;
-	else
-		reset_ctrl = WDOG_B_CFG_COLD_LDO12;
-
 	/* Set reset behavior on assertion of WDOG_B signal */
 	ret = regmap_update_bits(pca9450->regmap, PCA9450_REG_RESET_CTRL,
-				 WDOG_B_CFG_MASK, reset_ctrl);
+				WDOG_B_CFG_MASK, WDOG_B_CFG_COLD_LDO12);
 	if (ret) {
 		dev_err(&i2c->dev, "Failed to set WDOG_B reset behavior\n");
 		return ret;
-	}
-
-	if (of_property_read_bool(i2c->dev.of_node, "nxp,i2c-lt-enable")) {
-		/* Enable I2C Level Translator */
-		ret = regmap_update_bits(pca9450->regmap, PCA9450_REG_CONFIG2,
-					 I2C_LT_MASK, I2C_LT_ON_STANDBY_RUN);
-		if (ret) {
-			dev_err(&i2c->dev,
-				"Failed to enable I2C level translator\n");
-			return ret;
-		}
 	}
 
 	/*
@@ -844,7 +819,7 @@ static int pca9450_i2c_probe(struct i2c_client *i2c,
 
 	if (IS_ERR(pca9450->sd_vsel_gpio)) {
 		dev_err(&i2c->dev, "Failed to get SD_VSEL GPIO\n");
-		return PTR_ERR(pca9450->sd_vsel_gpio);
+		return ret;
 	}
 
 	dev_info(&i2c->dev, "%s probed.\n",

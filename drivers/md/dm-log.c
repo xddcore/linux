@@ -223,7 +223,7 @@ struct log_c {
 	unsigned int region_count;
 	region_t sync_count;
 
-	unsigned int bitset_uint32_count;
+	unsigned bitset_uint32_count;
 	uint32_t *clean_bits;
 	uint32_t *sync_bits;
 	uint32_t *recovering_bits;	/* FIXME: this seems excessive */
@@ -255,20 +255,20 @@ struct log_c {
  * The touched member needs to be updated every time we access
  * one of the bitsets.
  */
-static inline int log_test_bit(uint32_t *bs, unsigned int bit)
+static inline int log_test_bit(uint32_t *bs, unsigned bit)
 {
 	return test_bit_le(bit, bs) ? 1 : 0;
 }
 
 static inline void log_set_bit(struct log_c *l,
-			       uint32_t *bs, unsigned int bit)
+			       uint32_t *bs, unsigned bit)
 {
 	__set_bit_le(bit, bs);
 	l->touched_cleaned = 1;
 }
 
 static inline void log_clear_bit(struct log_c *l,
-				 uint32_t *bs, unsigned int bit)
+				 uint32_t *bs, unsigned bit)
 {
 	__clear_bit_le(bit, bs);
 	l->touched_dirtied = 1;
@@ -291,9 +291,10 @@ static void header_from_disk(struct log_header_core *core, struct log_header_dis
 	core->nr_regions = le64_to_cpu(disk->nr_regions);
 }
 
-static int rw_header(struct log_c *lc, enum req_op op)
+static int rw_header(struct log_c *lc, int op)
 {
-	lc->io_req.bi_opf = op;
+	lc->io_req.bi_op = op;
+	lc->io_req.bi_op_flags = 0;
 
 	return dm_io(&lc->io_req, 1, &lc->header_location, NULL);
 }
@@ -306,7 +307,8 @@ static int flush_header(struct log_c *lc)
 		.count = 0,
 	};
 
-	lc->io_req.bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
+	lc->io_req.bi_op = REQ_OP_WRITE;
+	lc->io_req.bi_op_flags = REQ_PREFLUSH;
 
 	return dm_io(&lc->io_req, 1, &null_location, NULL);
 }
@@ -444,7 +446,7 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 				bdev_logical_block_size(lc->header_location.
 							    bdev));
 
-		if (buf_size > bdev_nr_bytes(dev->bdev)) {
+		if (buf_size > i_size_read(dev->bdev->bd_inode)) {
 			DMWARN("log device %s too small: need %llu bytes",
 				dev->name, (unsigned long long)buf_size);
 			kfree(lc);
@@ -582,7 +584,7 @@ static void fail_log_device(struct log_c *lc)
 static int disk_resume(struct dm_dirty_log *log)
 {
 	int r;
-	unsigned int i;
+	unsigned i;
 	struct log_c *lc = (struct log_c *) log->context;
 	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
@@ -790,11 +792,6 @@ static int core_status(struct dm_dirty_log *log, status_type_t status,
 		DMEMIT("%s %u %u ", log->type->name,
 		       lc->sync == DEFAULTSYNC ? 1 : 2, lc->region_size);
 		DMEMIT_SYNC;
-		break;
-
-	case STATUSTYPE_IMA:
-		*result = '\0';
-		break;
 	}
 
 	return sz;
@@ -819,11 +816,6 @@ static int disk_status(struct dm_dirty_log *log, status_type_t status,
 		       lc->sync == DEFAULTSYNC ? 2 : 3, lc->log_dev->name,
 		       lc->region_size);
 		DMEMIT_SYNC;
-		break;
-
-	case STATUSTYPE_IMA:
-		*result = '\0';
-		break;
 	}
 
 	return sz;

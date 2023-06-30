@@ -42,15 +42,14 @@ gv100_gsp_nofw(struct nvkm_gsp *gsp, int ver, const struct nvkm_gsp_fwif *fwif)
 	return 0;
 }
 
-static struct nvkm_gsp_fwif
+struct nvkm_gsp_fwif
 gv100_gsp[] = {
 	{ -1, gv100_gsp_nofw, &gv100_gsp_flcn },
 	{}
 };
 
 int
-gv100_gsp_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-	      struct nvkm_gsp **pgsp)
+gv100_gsp_new(struct nvkm_device *device, int index, struct nvkm_gsp **pgsp)
 {
-	return nvkm_gsp_new_(gv100_gsp, device, type, inst, pgsp);
+	return nvkm_gsp_new_(gv100_gsp, device, index, pgsp);
 }

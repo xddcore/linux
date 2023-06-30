@@ -158,10 +158,11 @@ struct gc2235_device {
 	struct v4l2_mbus_framefmt format;
 	struct mutex input_lock;
 	struct v4l2_ctrl_handler ctrl_handler;
-	struct gc2235_resolution *res;
 
 	struct camera_sensor_platform_data *platform_data;
 	int vt_pix_clk_freq_mhz;
+	int fmt_idx;
+	u8 res;
 	u8 type;
 };
 
@@ -217,7 +218,7 @@ static struct gc2235_reg const gc2235_stream_off[] = {
 };
 
 static struct gc2235_reg const gc2235_init_settings[] = {
-	/* System */
+	/* Sysytem */
 	{ GC2235_8BIT, 0xfe, 0x80 },
 	{ GC2235_8BIT, 0xfe, 0x80 },
 	{ GC2235_8BIT, 0xfe, 0x80 },

@@ -7,7 +7,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -268,7 +267,7 @@ static int seiko_panel_probe(struct device *dev,
 
 static int seiko_panel_remove(struct platform_device *pdev)
 {
-	struct seiko_panel *panel = platform_get_drvdata(pdev);
+	struct seiko_panel *panel = dev_get_drvdata(&pdev->dev);
 
 	drm_panel_remove(&panel->base);
 	drm_panel_disable(&panel->base);
@@ -278,7 +277,7 @@ static int seiko_panel_remove(struct platform_device *pdev)
 
 static void seiko_panel_shutdown(struct platform_device *pdev)
 {
-	struct seiko_panel *panel = platform_get_drvdata(pdev);
+	struct seiko_panel *panel = dev_get_drvdata(&pdev->dev);
 
 	drm_panel_disable(&panel->base);
 }

@@ -19,34 +19,34 @@ static int rxe_qp_chk_cap(struct rxe_dev *rxe, struct ib_qp_cap *cap,
 			  int has_srq)
 {
 	if (cap->max_send_wr > rxe->attr.max_qp_wr) {
-		pr_debug("invalid send wr = %u > %d\n",
-			 cap->max_send_wr, rxe->attr.max_qp_wr);
+		pr_warn("invalid send wr = %d > %d\n",
+			cap->max_send_wr, rxe->attr.max_qp_wr);
 		goto err1;
 	}
 
 	if (cap->max_send_sge > rxe->attr.max_send_sge) {
-		pr_debug("invalid send sge = %u > %d\n",
-			 cap->max_send_sge, rxe->attr.max_send_sge);
+		pr_warn("invalid send sge = %d > %d\n",
+			cap->max_send_sge, rxe->attr.max_send_sge);
 		goto err1;
 	}
 
 	if (!has_srq) {
 		if (cap->max_recv_wr > rxe->attr.max_qp_wr) {
-			pr_debug("invalid recv wr = %u > %d\n",
-				 cap->max_recv_wr, rxe->attr.max_qp_wr);
+			pr_warn("invalid recv wr = %d > %d\n",
+				cap->max_recv_wr, rxe->attr.max_qp_wr);
 			goto err1;
 		}
 
 		if (cap->max_recv_sge > rxe->attr.max_recv_sge) {
-			pr_debug("invalid recv sge = %u > %d\n",
-				 cap->max_recv_sge, rxe->attr.max_recv_sge);
+			pr_warn("invalid recv sge = %d > %d\n",
+				cap->max_recv_sge, rxe->attr.max_recv_sge);
 			goto err1;
 		}
 	}
 
 	if (cap->max_inline_data > rxe->max_inline_data) {
-		pr_debug("invalid max inline data = %u > %d\n",
-			 cap->max_inline_data, rxe->max_inline_data);
+		pr_warn("invalid max inline data = %d > %d\n",
+			cap->max_inline_data, rxe->max_inline_data);
 		goto err1;
 	}
 
@@ -62,34 +62,29 @@ int rxe_qp_chk_init(struct rxe_dev *rxe, struct ib_qp_init_attr *init)
 	struct rxe_port *port;
 	int port_num = init->port_num;
 
-	switch (init->qp_type) {
-	case IB_QPT_GSI:
-	case IB_QPT_RC:
-	case IB_QPT_UC:
-	case IB_QPT_UD:
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
 	if (!init->recv_cq || !init->send_cq) {
-		pr_debug("missing cq\n");
+		pr_warn("missing cq\n");
 		goto err1;
 	}
 
 	if (rxe_qp_chk_cap(rxe, cap, !!init->srq))
 		goto err1;
 
-	if (init->qp_type == IB_QPT_GSI) {
+	if (init->qp_type == IB_QPT_SMI || init->qp_type == IB_QPT_GSI) {
 		if (!rdma_is_port_valid(&rxe->ib_dev, port_num)) {
-			pr_debug("invalid port = %d\n", port_num);
+			pr_warn("invalid port = %d\n", port_num);
 			goto err1;
 		}
 
 		port = &rxe->port;
 
+		if (init->qp_type == IB_QPT_SMI && port->qp_smi_index) {
+			pr_warn("SMI QP exists for port %d\n", port_num);
+			goto err1;
+		}
+
 		if (init->qp_type == IB_QPT_GSI && port->qp_gsi_index) {
-			pr_debug("GSI QP exists for port %d\n", port_num);
+			pr_warn("GSI QP exists for port %d\n", port_num);
 			goto err1;
 		}
 	}
@@ -120,15 +115,21 @@ static void free_rd_atomic_resources(struct rxe_qp *qp)
 		for (i = 0; i < qp->attr.max_dest_rd_atomic; i++) {
 			struct resp_res *res = &qp->resp.resources[i];
 
-			free_rd_atomic_resource(res);
+			free_rd_atomic_resource(qp, res);
 		}
 		kfree(qp->resp.resources);
 		qp->resp.resources = NULL;
 	}
 }
 
-void free_rd_atomic_resource(struct resp_res *res)
+void free_rd_atomic_resource(struct rxe_qp *qp, struct resp_res *res)
 {
+	if (res->type == RXE_ATOMIC_MASK) {
+		kfree_skb(res->atomic.skb);
+	} else if (res->type == RXE_READ_MASK) {
+		if (res->read.mr)
+			rxe_drop_ref(res->read.mr);
+	}
 	res->type = 0;
 }
 
@@ -140,7 +141,7 @@ static void cleanup_rd_atomic_resources(struct rxe_qp *qp)
 	if (qp->resp.resources) {
 		for (i = 0; i < qp->attr.max_dest_rd_atomic; i++) {
 			res = &qp->resp.resources[i];
-			free_rd_atomic_resource(res);
+			free_rd_atomic_resource(qp, res);
 		}
 	}
 }
@@ -155,10 +156,16 @@ static void rxe_qp_init_misc(struct rxe_dev *rxe, struct rxe_qp *qp,
 	qp->attr.path_mtu	= 1;
 	qp->mtu			= ib_mtu_enum_to_int(qp->attr.path_mtu);
 
-	qpn			= qp->elem.index;
+	qpn			= qp->pelem.index;
 	port			= &rxe->port;
 
 	switch (init->qp_type) {
+	case IB_QPT_SMI:
+		qp->ibqp.qp_num		= 0;
+		port->qp_smi_index	= qpn;
+		qp->attr.port_num	= init->port_num;
+		break;
+
 	case IB_QPT_GSI:
 		qp->ibqp.qp_num		= 1;
 		port->qp_gsi_index	= qpn;
@@ -170,6 +177,11 @@ static void rxe_qp_init_misc(struct rxe_dev *rxe, struct rxe_qp *qp,
 		break;
 	}
 
+	INIT_LIST_HEAD(&qp->grp_list);
+
+	skb_queue_head_init(&qp->send_pkts);
+
+	spin_lock_init(&qp->grp_lock);
 	spin_lock_init(&qp->state_lock);
 
 	spin_lock_init(&qp->req.task.state_lock);
@@ -193,7 +205,6 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	int err;
 	int wqe_size;
-	enum queue_type type;
 
 	err = sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, 0, &qp->sk);
 	if (err < 0)
@@ -207,7 +218,8 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	 * the port number must be in the Dynamic Ports range
 	 * (0xc000 - 0xffff).
 	 */
-	qp->src_port = RXE_ROCE_V2_SPORT + (hash_32(qp_num(qp), 14) & 0x3fff);
+	qp->src_port = RXE_ROCE_V2_SPORT +
+		(hash_32_generic(qp_num(qp), 14) & 0x3fff);
 	qp->sq.max_wr		= init->cap.max_send_wr;
 
 	/* These caps are limited by rxe_qp_chk_cap() done by the caller */
@@ -218,9 +230,7 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 	qp->sq.max_inline = init->cap.max_inline_data = wqe_size;
 	wqe_size += sizeof(struct rxe_send_wqe);
 
-	type = QUEUE_TYPE_FROM_CLIENT;
-	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr,
-				wqe_size, type);
+	qp->sq.queue = rxe_queue_init(rxe, &qp->sq.max_wr, wqe_size);
 	if (!qp->sq.queue)
 		return -ENOMEM;
 
@@ -235,11 +245,8 @@ static int rxe_qp_init_req(struct rxe_dev *rxe, struct rxe_qp *qp,
 		return err;
 	}
 
-	qp->req.wqe_index = queue_get_producer(qp->sq.queue,
-					       QUEUE_TYPE_FROM_CLIENT);
-
+	qp->req.wqe_index	= producer_index(qp->sq.queue);
 	qp->req.state		= QP_STATE_RESET;
-	qp->comp.state		= QP_STATE_RESET;
 	qp->req.opcode		= -1;
 	qp->comp.opcode		= -1;
 
@@ -261,7 +268,6 @@ static int rxe_qp_init_resp(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	int err;
 	int wqe_size;
-	enum queue_type type;
 
 	if (!qp->srq) {
 		qp->rq.max_wr		= init->cap.max_recv_wr;
@@ -272,9 +278,9 @@ static int rxe_qp_init_resp(struct rxe_dev *rxe, struct rxe_qp *qp,
 		pr_debug("qp#%d max_wr = %d, max_sge = %d, wqe_size = %d\n",
 			 qp_num(qp), qp->rq.max_wr, qp->rq.max_sge, wqe_size);
 
-		type = QUEUE_TYPE_FROM_CLIENT;
-		qp->rq.queue = rxe_queue_init(rxe, &qp->rq.max_wr,
-					wqe_size, type);
+		qp->rq.queue = rxe_queue_init(rxe,
+					      &qp->rq.max_wr,
+					      wqe_size);
 		if (!qp->rq.queue)
 			return -ENOMEM;
 
@@ -310,19 +316,16 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 	struct rxe_cq *scq = to_rcq(init->send_cq);
 	struct rxe_srq *srq = init->srq ? to_rsrq(init->srq) : NULL;
 
-	rxe_get(pd);
-	rxe_get(rcq);
-	rxe_get(scq);
+	rxe_add_ref(pd);
+	rxe_add_ref(rcq);
+	rxe_add_ref(scq);
 	if (srq)
-		rxe_get(srq);
+		rxe_add_ref(srq);
 
 	qp->pd			= pd;
 	qp->rcq			= rcq;
 	qp->scq			= scq;
 	qp->srq			= srq;
-
-	atomic_inc(&rcq->num_wq);
-	atomic_inc(&scq->num_wq);
 
 	rxe_qp_init_misc(rxe, qp, init);
 
@@ -341,21 +344,17 @@ int rxe_qp_from_init(struct rxe_dev *rxe, struct rxe_qp *qp, struct rxe_pd *pd,
 
 err2:
 	rxe_queue_cleanup(qp->sq.queue);
-	qp->sq.queue = NULL;
 err1:
-	atomic_dec(&rcq->num_wq);
-	atomic_dec(&scq->num_wq);
-
 	qp->pd = NULL;
 	qp->rcq = NULL;
 	qp->scq = NULL;
 	qp->srq = NULL;
 
 	if (srq)
-		rxe_put(srq);
-	rxe_put(scq);
-	rxe_put(rcq);
-	rxe_put(pd);
+		rxe_drop_ref(srq);
+	rxe_drop_ref(scq);
+	rxe_drop_ref(rcq);
+	rxe_drop_ref(pd);
 
 	return err;
 }
@@ -398,7 +397,7 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 					attr->qp_state : cur_state;
 
 	if (!ib_modify_qp_is_ok(cur_state, new_state, qp_type(qp), mask)) {
-		pr_debug("invalid mask or state for qp\n");
+		pr_warn("invalid mask or state for qp\n");
 		goto err1;
 	}
 
@@ -412,7 +411,7 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	if (mask & IB_QP_PORT) {
 		if (!rdma_is_port_valid(&rxe->ib_dev, attr->port_num)) {
-			pr_debug("invalid port %d\n", attr->port_num);
+			pr_warn("invalid port %d\n", attr->port_num);
 			goto err1;
 		}
 	}
@@ -427,12 +426,12 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 		if (rxe_av_chk_attr(rxe, &attr->alt_ah_attr))
 			goto err1;
 		if (!rdma_is_port_valid(&rxe->ib_dev, attr->alt_port_num))  {
-			pr_debug("invalid alt port %d\n", attr->alt_port_num);
+			pr_warn("invalid alt port %d\n", attr->alt_port_num);
 			goto err1;
 		}
 		if (attr->alt_timeout > 31) {
-			pr_debug("invalid QP alt timeout %d > 31\n",
-				 attr->alt_timeout);
+			pr_warn("invalid QP alt timeout %d > 31\n",
+				attr->alt_timeout);
 			goto err1;
 		}
 	}
@@ -453,16 +452,17 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	if (mask & IB_QP_MAX_QP_RD_ATOMIC) {
 		if (attr->max_rd_atomic > rxe->attr.max_qp_rd_atom) {
-			pr_debug("invalid max_rd_atomic %d > %d\n",
-				 attr->max_rd_atomic,
-				 rxe->attr.max_qp_rd_atom);
+			pr_warn("invalid max_rd_atomic %d > %d\n",
+				attr->max_rd_atomic,
+				rxe->attr.max_qp_rd_atom);
 			goto err1;
 		}
 	}
 
 	if (mask & IB_QP_TIMEOUT) {
 		if (attr->timeout > 31) {
-			pr_debug("invalid QP timeout %d > 31\n", attr->timeout);
+			pr_warn("invalid QP timeout %d > 31\n",
+				attr->timeout);
 			goto err1;
 		}
 	}
@@ -488,7 +488,6 @@ static void rxe_qp_reset(struct rxe_qp *qp)
 
 	/* move qp to the reset state */
 	qp->req.state = QP_STATE_RESET;
-	qp->comp.state = QP_STATE_RESET;
 	qp->resp.state = QP_STATE_RESET;
 
 	/* let state machines reset themselves drain work and packet queues
@@ -506,7 +505,6 @@ static void rxe_qp_reset(struct rxe_qp *qp)
 	atomic_set(&qp->ssn, 0);
 	qp->req.opcode = -1;
 	qp->req.need_retry = 0;
-	qp->req.wait_for_rnr_timer = 0;
 	qp->req.noack_pkts = 0;
 	qp->resp.msn = 0;
 	qp->resp.opcode = -1;
@@ -515,7 +513,7 @@ static void rxe_qp_reset(struct rxe_qp *qp)
 	qp->resp.sent_psn_nak = 0;
 
 	if (qp->resp.mr) {
-		rxe_put(qp->resp.mr);
+		rxe_drop_ref(qp->resp.mr);
 		qp->resp.mr = NULL;
 	}
 
@@ -552,7 +550,6 @@ void rxe_qp_error(struct rxe_qp *qp)
 {
 	qp->req.state = QP_STATE_ERROR;
 	qp->resp.state = QP_STATE_ERROR;
-	qp->comp.state = QP_STATE_ERROR;
 	qp->attr.qp_state = IB_QPS_ERR;
 
 	/* drain work and packet queues */
@@ -690,7 +687,6 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 			pr_debug("qp#%d state -> INIT\n", qp_num(qp));
 			qp->req.state = QP_STATE_INIT;
 			qp->resp.state = QP_STATE_INIT;
-			qp->comp.state = QP_STATE_INIT;
 			break;
 
 		case IB_QPS_RTR:
@@ -701,7 +697,6 @@ int rxe_qp_from_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask,
 		case IB_QPS_RTS:
 			pr_debug("qp#%d state -> RTS\n", qp_num(qp));
 			qp->req.state = QP_STATE_READY;
-			qp->comp.state = QP_STATE_READY;
 			break;
 
 		case IB_QPS_SQD:
@@ -760,25 +755,9 @@ int rxe_qp_to_attr(struct rxe_qp *qp, struct ib_qp_attr *attr, int mask)
 	return 0;
 }
 
-int rxe_qp_chk_destroy(struct rxe_qp *qp)
+/* called by the destroy qp verb */
+void rxe_qp_destroy(struct rxe_qp *qp)
 {
-	/* See IBA o10-2.2.3
-	 * An attempt to destroy a QP while attached to a mcast group
-	 * will fail immediately.
-	 */
-	if (atomic_read(&qp->mcg_num)) {
-		pr_debug("Attempt to destroy QP while attached to multicast group\n");
-		return -EBUSY;
-	}
-
-	return 0;
-}
-
-/* called when the last reference to the qp is dropped */
-static void rxe_qp_do_cleanup(struct work_struct *work)
-{
-	struct rxe_qp *qp = container_of(work, typeof(*qp), cleanup_work.work);
-
 	qp->valid = 0;
 	qp->qp_timeout_jiffies = 0;
 	rxe_cleanup_task(&qp->resp.task);
@@ -788,11 +767,8 @@ static void rxe_qp_do_cleanup(struct work_struct *work)
 		del_timer_sync(&qp->rnr_nak_timer);
 	}
 
-	if (qp->req.task.func)
-		rxe_cleanup_task(&qp->req.task);
-
-	if (qp->comp.task.func)
-		rxe_cleanup_task(&qp->comp.task);
+	rxe_cleanup_task(&qp->req.task);
+	rxe_cleanup_task(&qp->comp.task);
 
 	/* flush out any receive wr's or pending requests */
 	if (qp->req.task.func)
@@ -802,31 +778,35 @@ static void rxe_qp_do_cleanup(struct work_struct *work)
 		__rxe_do_task(&qp->comp.task);
 		__rxe_do_task(&qp->req.task);
 	}
+}
+
+/* called when the last reference to the qp is dropped */
+static void rxe_qp_do_cleanup(struct work_struct *work)
+{
+	struct rxe_qp *qp = container_of(work, typeof(*qp), cleanup_work.work);
+
+	rxe_drop_all_mcast_groups(qp);
 
 	if (qp->sq.queue)
 		rxe_queue_cleanup(qp->sq.queue);
 
 	if (qp->srq)
-		rxe_put(qp->srq);
+		rxe_drop_ref(qp->srq);
 
 	if (qp->rq.queue)
 		rxe_queue_cleanup(qp->rq.queue);
 
-	if (qp->scq) {
-		atomic_dec(&qp->scq->num_wq);
-		rxe_put(qp->scq);
-	}
-
-	if (qp->rcq) {
-		atomic_dec(&qp->rcq->num_wq);
-		rxe_put(qp->rcq);
-	}
-
+	if (qp->scq)
+		rxe_drop_ref(qp->scq);
+	if (qp->rcq)
+		rxe_drop_ref(qp->rcq);
 	if (qp->pd)
-		rxe_put(qp->pd);
+		rxe_drop_ref(qp->pd);
 
-	if (qp->resp.mr)
-		rxe_put(qp->resp.mr);
+	if (qp->resp.mr) {
+		rxe_drop_ref(qp->resp.mr);
+		qp->resp.mr = NULL;
+	}
 
 	free_rd_atomic_resources(qp);
 
@@ -840,9 +820,9 @@ static void rxe_qp_do_cleanup(struct work_struct *work)
 }
 
 /* called when the last reference to the qp is dropped */
-void rxe_qp_cleanup(struct rxe_pool_elem *elem)
+void rxe_qp_cleanup(struct rxe_pool_entry *arg)
 {
-	struct rxe_qp *qp = container_of(elem, typeof(*qp), elem);
+	struct rxe_qp *qp = container_of(arg, typeof(*qp), pelem);
 
 	execute_in_process_context(rxe_qp_do_cleanup, &qp->cleanup_work);
 }

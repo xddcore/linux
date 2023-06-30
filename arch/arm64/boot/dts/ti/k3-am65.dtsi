@@ -31,8 +31,6 @@
 		i2c4 = &main_i2c2;
 		i2c5 = &main_i2c3;
 		ethernet0 = &cpsw_port1;
-		mmc0 = &sdhci0;
-		mmc1 = &sdhci1;
 	};
 
 	chosen { };
@@ -58,7 +56,7 @@
 	};
 
 	pmu: pmu {
-		compatible = "arm,cortex-a53-pmu";
+		compatible = "arm,armv8-pmuv3";
 		/* Recommendation from GIC500 TRM Table A.3 */
 		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_HIGH>;
 	};

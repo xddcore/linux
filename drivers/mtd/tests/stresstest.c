@@ -45,8 +45,9 @@ static int rand_eb(void)
 	unsigned int eb;
 
 again:
+	eb = prandom_u32();
 	/* Read or write up 2 eraseblocks at a time - hence 'ebcnt - 1' */
-	eb = prandom_u32_max(ebcnt - 1);
+	eb %= (ebcnt - 1);
 	if (bbt[eb])
 		goto again;
 	return eb;
@@ -54,12 +55,20 @@ again:
 
 static int rand_offs(void)
 {
-	return prandom_u32_max(bufsize);
+	unsigned int offs;
+
+	offs = prandom_u32();
+	offs %= bufsize;
+	return offs;
 }
 
 static int rand_len(int offs)
 {
-	return prandom_u32_max(bufsize - offs);
+	unsigned int len;
+
+	len = prandom_u32();
+	len %= (bufsize - offs);
+	return len;
 }
 
 static int do_read(void)
@@ -118,7 +127,7 @@ static int do_write(void)
 
 static int do_operation(void)
 {
-	if (prandom_u32_max(2))
+	if (prandom_u32() & 1)
 		return do_read();
 	else
 		return do_write();
@@ -183,7 +192,7 @@ static int __init mtd_stresstest_init(void)
 		goto out;
 	for (i = 0; i < ebcnt; i++)
 		offsets[i] = mtd->erasesize;
-	get_random_bytes(writebuf, bufsize);
+	prandom_bytes(writebuf, bufsize);
 
 	bbt = kzalloc(ebcnt, GFP_KERNEL);
 	if (!bbt)

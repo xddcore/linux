@@ -3,10 +3,20 @@
 #define _ASM_ARM_MODULE_H
 
 #include <asm-generic/module.h>
-#include <asm/unwind.h>
+
+struct unwind_table;
 
 #ifdef CONFIG_ARM_UNWIND
-#define ELF_SECTION_UNWIND 0x70000001
+enum {
+	ARM_SEC_INIT,
+	ARM_SEC_DEVINIT,
+	ARM_SEC_CORE,
+	ARM_SEC_EXIT,
+	ARM_SEC_DEVEXIT,
+	ARM_SEC_HOT,
+	ARM_SEC_UNLIKELY,
+	ARM_SEC_MAX,
+};
 #endif
 
 #define PLT_ENT_STRIDE		L1_CACHE_BYTES
@@ -26,8 +36,7 @@ struct mod_plt_sec {
 
 struct mod_arch_specific {
 #ifdef CONFIG_ARM_UNWIND
-	struct list_head unwind_list;
-	struct unwind_table *init_table;
+	struct unwind_table *unwind[ARM_SEC_MAX];
 #endif
 #ifdef CONFIG_ARM_MODULE_PLTS
 	struct mod_plt_sec	core;

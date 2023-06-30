@@ -158,13 +158,13 @@ static int ks_wlan_get_name(struct net_device *dev,
 
 	/* for SLEEP MODE */
 	if (priv->dev_state < DEVICE_STATE_READY)
-		strscpy(cwrq->name, "NOT READY!", sizeof(cwrq->name));
+		strcpy(cwrq->name, "NOT READY!");
 	else if (priv->reg.phy_type == D_11B_ONLY_MODE)
-		strscpy(cwrq->name, "IEEE 802.11b", sizeof(cwrq->name));
+		strcpy(cwrq->name, "IEEE 802.11b");
 	else if (priv->reg.phy_type == D_11G_ONLY_MODE)
-		strscpy(cwrq->name, "IEEE 802.11g", sizeof(cwrq->name));
+		strcpy(cwrq->name, "IEEE 802.11g");
 	else
-		strscpy(cwrq->name, "IEEE 802.11b/g", sizeof(cwrq->name));
+		strcpy(cwrq->name, "IEEE 802.11b/g");
 
 	return 0;
 }
@@ -1808,8 +1808,8 @@ static int ks_wlan_get_firmware_version(struct net_device *dev,
 {
 	struct ks_wlan_private *priv = netdev_priv(dev);
 
+	strcpy(extra, priv->firmware_version);
 	dwrq->length = priv->version_size + 1;
-	strscpy(extra, priv->firmware_version, dwrq->length);
 	return 0;
 }
 
@@ -2490,7 +2490,7 @@ int ks_wlan_set_mac_address(struct net_device *dev, void *addr)
 
 	if (netif_running(dev))
 		return -EBUSY;
-	eth_hw_addr_set(dev, mac_addr->sa_data);
+	memcpy(dev->dev_addr, mac_addr->sa_data, dev->addr_len);
 	ether_addr_copy(priv->eth_addr, mac_addr->sa_data);
 
 	priv->mac_address_valid = false;
@@ -2625,7 +2625,7 @@ int ks_wlan_net_start(struct net_device *dev)
 
 	/* dummy address set */
 	ether_addr_copy(priv->eth_addr, dummy_addr);
-	eth_hw_addr_set(dev, priv->eth_addr);
+	ether_addr_copy(dev->dev_addr, priv->eth_addr);
 
 	/* The ks_wlan-specific entries in the device structure. */
 	dev->netdev_ops = &ks_wlan_netdev_ops;

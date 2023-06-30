@@ -48,7 +48,7 @@ static enum { EMULATE, XONLY, NONE } vsyscall_mode __ro_after_init =
 #elif defined(CONFIG_LEGACY_VSYSCALL_XONLY)
 	XONLY;
 #else
-	#error VSYSCALL config is broken
+	EMULATE;
 #endif
 
 static int __init vsyscall_setup(char *str)
@@ -226,8 +226,7 @@ bool emulate_vsyscall(unsigned long error_code,
 	if ((!tmp && regs->orig_ax != syscall_nr) || regs->ip != address) {
 		warn_bad_vsyscall(KERN_DEBUG, regs,
 				  "seccomp tried to change syscall nr or ip");
-		force_exit_sig(SIGSYS);
-		return true;
+		do_exit(SIGSYS);
 	}
 	regs->orig_ax = -1;
 	if (tmp)
@@ -317,7 +316,7 @@ static struct vm_area_struct gate_vma __ro_after_init = {
 struct vm_area_struct *get_gate_vma(struct mm_struct *mm)
 {
 #ifdef CONFIG_COMPAT
-	if (!mm || !(mm->context.flags & MM_CONTEXT_HAS_VSYSCALL))
+	if (!mm || mm->context.ia32_compat)
 		return NULL;
 #endif
 	if (vsyscall_mode == NONE)

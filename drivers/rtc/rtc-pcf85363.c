@@ -285,6 +285,11 @@ static irqreturn_t pcf85363_rtc_handle_irq(int irq, void *dev_id)
 static const struct rtc_class_ops rtc_ops = {
 	.read_time	= pcf85363_rtc_read_time,
 	.set_time	= pcf85363_rtc_set_time,
+};
+
+static const struct rtc_class_ops rtc_ops_alarm = {
+	.read_time	= pcf85363_rtc_read_time,
+	.set_time	= pcf85363_rtc_set_time,
 	.read_alarm	= pcf85363_rtc_read_alarm,
 	.set_alarm	= pcf85363_rtc_set_alarm,
 	.alarm_irq_enable = pcf85363_rtc_alarm_irq_enable,
@@ -350,7 +355,8 @@ static const struct pcf85x63_config pcf_85363_config = {
 	.num_nvram = 2
 };
 
-static int pcf85363_probe(struct i2c_client *client)
+static int pcf85363_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
 {
 	struct pcf85363 *pcf85363;
 	const struct pcf85x63_config *config = &pcf_85363_config;
@@ -397,7 +403,6 @@ static int pcf85363_probe(struct i2c_client *client)
 	pcf85363->rtc->ops = &rtc_ops;
 	pcf85363->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	pcf85363->rtc->range_max = RTC_TIMESTAMP_END_2099;
-	clear_bit(RTC_FEATURE_ALARM, pcf85363->rtc->features);
 
 	if (client->irq > 0) {
 		regmap_write(pcf85363->regmap, CTRL_FLAGS, 0);
@@ -410,20 +415,20 @@ static int pcf85363_probe(struct i2c_client *client)
 		if (ret)
 			dev_warn(&client->dev, "unable to request IRQ, alarms disabled\n");
 		else
-			set_bit(RTC_FEATURE_ALARM, pcf85363->rtc->features);
+			pcf85363->rtc->ops = &rtc_ops_alarm;
 	}
 
-	ret = devm_rtc_register_device(pcf85363->rtc);
+	ret = rtc_register_device(pcf85363->rtc);
 
 	for (i = 0; i < config->num_nvram; i++) {
 		nvmem_cfg[i].priv = pcf85363;
-		devm_rtc_nvmem_register(pcf85363->rtc, &nvmem_cfg[i]);
+		rtc_nvmem_register(pcf85363->rtc, &nvmem_cfg[i]);
 	}
 
 	return ret;
 }
 
-static const __maybe_unused struct of_device_id dev_ids[] = {
+static const struct of_device_id dev_ids[] = {
 	{ .compatible = "nxp,pcf85263", .data = &pcf_85263_config },
 	{ .compatible = "nxp,pcf85363", .data = &pcf_85363_config },
 	{ /* sentinel */ }
@@ -435,7 +440,7 @@ static struct i2c_driver pcf85363_driver = {
 		.name	= "pcf85363",
 		.of_match_table = of_match_ptr(dev_ids),
 	},
-	.probe_new = pcf85363_probe,
+	.probe	= pcf85363_probe,
 };
 
 module_i2c_driver(pcf85363_driver);

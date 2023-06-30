@@ -193,7 +193,8 @@ get_queue_num:
 		if (recontend_queue)
 			goto get_queue_num;
 
-		return INVALID_QUEUE;
+		q_num = INVALID_QUEUE;
+		return q_num;
 	}
 
 	common->selected_qnum = q_num;
@@ -420,8 +421,7 @@ void rsi_core_xmit(struct rsi_common *common, struct sk_buff *skb)
 			rsi_hal_send_sta_notify_frame(common,
 						      RSI_IFTYPE_STATION,
 						      STA_CONNECTED, bss->bssid,
-						      bss->qos, vif->cfg.aid,
-						      0,
+						      bss->qos, bss->aid, 0,
 						      vif);
 		}
 

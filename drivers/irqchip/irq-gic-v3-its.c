@@ -11,9 +11,9 @@
 #include <linux/cpu.h>
 #include <linux/crash_dump.h>
 #include <linux/delay.h>
+#include <linux/dma-iommu.h>
 #include <linux/efi.h>
 #include <linux/interrupt.h>
-#include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/irqdomain.h>
 #include <linux/list.h>
@@ -45,10 +45,6 @@
 
 #define RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING	(1 << 0)
 #define RDIST_FLAGS_RD_TABLES_PREALLOCATED	(1 << 1)
-
-#define RD_LOCAL_LPI_ENABLED                    BIT(0)
-#define RD_LOCAL_PENDTABLE_PREALLOCATED         BIT(1)
-#define RD_LOCAL_MEMRESERVE_DONE                BIT(2)
 
 static u32 lpi_id_bits;
 
@@ -798,13 +794,8 @@ static struct its_vpe *its_build_vmapp_cmd(struct its_node *its,
 
 	its_encode_alloc(cmd, alloc);
 
-	/*
-	 * GICv4.1 provides a way to get the VLPI state, which needs the vPE
-	 * to be unmapped first, and in this case, we may remap the vPE
-	 * back while the VPT is not empty. So we can't assume that the
-	 * VPT is empty on map. This is why we never advertise PTZ.
-	 */
-	its_encode_ptz(cmd, false);
+	/* We can only signal PTZ when alloc==1. Why do we have two bits? */
+	its_encode_ptz(cmd, alloc);
 	its_encode_vconf_addr(cmd, vconf_addr);
 	its_encode_vmapp_default_db(cmd, desc->its_vmapp_cmd.vpe->vpe_db_lpi);
 
@@ -1574,15 +1565,13 @@ static int its_select_cpu(struct irq_data *d,
 			  const struct cpumask *aff_mask)
 {
 	struct its_device *its_dev = irq_data_get_irq_chip_data(d);
-	static DEFINE_RAW_SPINLOCK(tmpmask_lock);
-	static struct cpumask __tmpmask;
-	struct cpumask *tmpmask;
-	unsigned long flags;
+	cpumask_var_t tmpmask;
 	int cpu, node;
-	node = its_dev->its->numa_node;
-	tmpmask = &__tmpmask;
 
-	raw_spin_lock_irqsave(&tmpmask_lock, flags);
+	if (!alloc_cpumask_var(&tmpmask, GFP_ATOMIC))
+		return -ENOMEM;
+
+	node = its_dev->its->numa_node;
 
 	if (!irqd_affinity_is_managed(d)) {
 		/* First try the NUMA node */
@@ -1636,7 +1625,7 @@ static int its_select_cpu(struct irq_data *d,
 		cpu = cpumask_pick_least_loaded(d, tmpmask);
 	}
 out:
-	raw_spin_unlock_irqrestore(&tmpmask_lock, flags);
+	free_cpumask_var(tmpmask);
 
 	pr_debug("IRQ%d -> %*pbl CPU%d\n", d->irq, cpumask_pr_args(aff_mask), cpu);
 	return cpu;
@@ -2146,7 +2135,7 @@ static unsigned long *its_lpi_alloc(int nr_irqs, u32 *base, int *nr_ids)
 	if (err)
 		goto out;
 
-	bitmap = bitmap_zalloc(nr_irqs, GFP_ATOMIC);
+	bitmap = kcalloc(BITS_TO_LONGS(nr_irqs), sizeof (long), GFP_ATOMIC);
 	if (!bitmap)
 		goto out;
 
@@ -2162,7 +2151,7 @@ out:
 static void its_lpi_free(unsigned long *bitmap, u32 base, u32 nr_ids)
 {
 	WARN_ON(free_lpi_range(base, nr_ids));
-	bitmap_free(bitmap);
+	kfree(bitmap);
 }
 
 static void gic_reset_prop_table(void *va)
@@ -3013,11 +3002,17 @@ static int __init allocate_lpi_tables(void)
 	return 0;
 }
 
-static u64 read_vpend_dirty_clear(void __iomem *vlpi_base)
+static u64 its_clear_vpend_valid(void __iomem *vlpi_base, u64 clr, u64 set)
 {
 	u32 count = 1000000;	/* 1s! */
 	bool clean;
 	u64 val;
+
+	val = gicr_read_vpendbaser(vlpi_base + GICR_VPENDBASER);
+	val &= ~GICR_VPENDBASER_Valid;
+	val &= ~clr;
+	val |= set;
+	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
 
 	do {
 		val = gicr_read_vpendbaser(vlpi_base + GICR_VPENDBASER);
@@ -3029,26 +3024,10 @@ static u64 read_vpend_dirty_clear(void __iomem *vlpi_base)
 		}
 	} while (!clean && count);
 
-	if (unlikely(!clean))
+	if (unlikely(val & GICR_VPENDBASER_Dirty)) {
 		pr_err_ratelimited("ITS virtual pending table not cleaning\n");
-
-	return val;
-}
-
-static u64 its_clear_vpend_valid(void __iomem *vlpi_base, u64 clr, u64 set)
-{
-	u64 val;
-
-	/* Make sure we wait until the RD is done with the initial scan */
-	val = read_vpend_dirty_clear(vlpi_base);
-	val &= ~GICR_VPENDBASER_Valid;
-	val &= ~clr;
-	val |= set;
-	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
-
-	val = read_vpend_dirty_clear(vlpi_base);
-	if (unlikely(val & GICR_VPENDBASER_Dirty))
 		val |= GICR_VPENDBASER_PendingLast;
+	}
 
 	return val;
 }
@@ -3060,7 +3039,7 @@ static void its_cpu_init_lpis(void)
 	phys_addr_t paddr;
 	u64 val, tmp;
 
-	if (gic_data_rdist()->flags & RD_LOCAL_LPI_ENABLED)
+	if (gic_data_rdist()->lpi_enabled)
 		return;
 
 	val = readl_relaxed(rbase + GICR_CTLR);
@@ -3079,13 +3058,15 @@ static void its_cpu_init_lpis(void)
 		paddr &= GENMASK_ULL(51, 16);
 
 		WARN_ON(!gic_check_reserved_range(paddr, LPI_PENDBASE_SZ));
-		gic_data_rdist()->flags |= RD_LOCAL_PENDTABLE_PREALLOCATED;
+		its_free_pending_table(gic_data_rdist()->pend_page);
+		gic_data_rdist()->pend_page = NULL;
 
 		goto out;
 	}
 
 	pend_page = gic_data_rdist()->pend_page;
 	paddr = page_to_phys(pend_page);
+	WARN_ON(gic_reserve_range(paddr, LPI_PENDBASE_SZ));
 
 	/* set PROPBASE */
 	val = (gic_rdists->prop_table_pa |
@@ -3172,11 +3153,10 @@ static void its_cpu_init_lpis(void)
 	/* Make sure the GIC has seen the above */
 	dsb(sy);
 out:
-	gic_data_rdist()->flags |= RD_LOCAL_LPI_ENABLED;
+	gic_data_rdist()->lpi_enabled = true;
 	pr_info("GICv3: CPU%d: using %s LPI pending table @%pa\n",
 		smp_processor_id(),
-		gic_data_rdist()->flags & RD_LOCAL_PENDTABLE_PREALLOCATED ?
-		"reserved" : "allocated",
+		gic_data_rdist()->pend_page ? "allocated" : "reserved",
 		&paddr);
 }
 
@@ -3402,7 +3382,7 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
 	if (!dev || !itt ||  !col_map || (!lpi_map && alloc_lpis)) {
 		kfree(dev);
 		kfree(itt);
-		bitmap_free(lpi_map);
+		kfree(lpi_map);
 		kfree(col_map);
 		return NULL;
 	}
@@ -3506,9 +3486,6 @@ static int its_msi_prepare(struct irq_domain *domain, struct device *dev,
 		err = -ENOMEM;
 		goto out;
 	}
-
-	if (info->flags & MSI_ALLOC_FLAGS_PROXY_DEVICE)
-		its_dev->shared = true;
 
 	pr_debug("ITT %d entries, %d bits\n", nvec, ilog2(nvec));
 out:
@@ -3831,7 +3808,7 @@ static void its_wait_vpt_parse_complete(void)
 	WARN_ON_ONCE(readq_relaxed_poll_timeout_atomic(vlpi_base + GICR_VPENDBASER,
 						       val,
 						       !(val & GICR_VPENDBASER_Dirty),
-						       1, 500));
+						       10, 500));
 }
 
 static void its_vpe_schedule(struct its_vpe *vpe)
@@ -3864,6 +3841,8 @@ static void its_vpe_schedule(struct its_vpe *vpe)
 	val |= vpe->idai ? GICR_VPENDBASER_IDAI : 0;
 	val |= GICR_VPENDBASER_Valid;
 	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
+
+	its_wait_vpt_parse_complete();
 }
 
 static void its_vpe_deschedule(struct its_vpe *vpe)
@@ -3909,10 +3888,6 @@ static int its_vpe_set_vcpu_affinity(struct irq_data *d, void *vcpu_info)
 
 	case DESCHEDULE_VPE:
 		its_vpe_deschedule(vpe);
-		return 0;
-
-	case COMMIT_VPE:
-		its_wait_vpt_parse_complete();
 		return 0;
 
 	case INVALL_VPE:
@@ -4076,6 +4051,8 @@ static void its_vpe_4_1_schedule(struct its_vpe *vpe,
 	val |= FIELD_PREP(GICR_VPENDBASER_4_1_VPEID, vpe->vpe_id);
 
 	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
+
+	its_wait_vpt_parse_complete();
 }
 
 static void its_vpe_4_1_deschedule(struct its_vpe *vpe,
@@ -4148,10 +4125,6 @@ static int its_vpe_4_1_set_vcpu_affinity(struct irq_data *d, void *vcpu_info)
 
 	case DESCHEDULE_VPE:
 		its_vpe_4_1_deschedule(vpe, info);
-		return 0;
-
-	case COMMIT_VPE:
-		its_wait_vpt_parse_complete();
 		return 0;
 
 	case INVALL_VPE:
@@ -4574,15 +4547,6 @@ static void its_vpe_irq_domain_deactivate(struct irq_domain *domain,
 
 		its_send_vmapp(its, vpe, false);
 	}
-
-	/*
-	 * There may be a direct read to the VPT after unmapping the
-	 * vPE, to guarantee the validity of this, we make the VPT
-	 * memory coherent with the CPU caches here.
-	 */
-	if (find_4_1_its() && !atomic_read(&vpe->vmapp_count))
-		gic_flush_dcache_to_poc(page_address(vpe->vpt_page),
-					LPI_PENDBASE_SZ);
 }
 
 static const struct irq_domain_ops its_vpe_domain_ops = {
@@ -4868,38 +4832,6 @@ static struct syscore_ops its_syscore_ops = {
 	.resume = its_restore_enable,
 };
 
-static void __init __iomem *its_map_one(struct resource *res, int *err)
-{
-	void __iomem *its_base;
-	u32 val;
-
-	its_base = ioremap(res->start, SZ_64K);
-	if (!its_base) {
-		pr_warn("ITS@%pa: Unable to map ITS registers\n", &res->start);
-		*err = -ENOMEM;
-		return NULL;
-	}
-
-	val = readl_relaxed(its_base + GITS_PIDR2) & GIC_PIDR2_ARCH_MASK;
-	if (val != 0x30 && val != 0x40) {
-		pr_warn("ITS@%pa: No ITS detected, giving up\n", &res->start);
-		*err = -ENODEV;
-		goto out_unmap;
-	}
-
-	*err = its_force_quiescent(its_base);
-	if (*err) {
-		pr_warn("ITS@%pa: Failed to quiesce, giving up\n", &res->start);
-		goto out_unmap;
-	}
-
-	return its_base;
-
-out_unmap:
-	iounmap(its_base);
-	return NULL;
-}
-
 static int its_init_domain(struct fwnode_handle *handle, struct its_node *its)
 {
 	struct irq_domain *inner_domain;
@@ -4942,8 +4874,10 @@ static int its_init_vpe_domain(void)
 	entries = roundup_pow_of_two(nr_cpu_ids);
 	vpe_proxy.vpes = kcalloc(entries, sizeof(*vpe_proxy.vpes),
 				 GFP_KERNEL);
-	if (!vpe_proxy.vpes)
+	if (!vpe_proxy.vpes) {
+		pr_err("ITS: Can't allocate GICv4 proxy device array\n");
 		return -ENOMEM;
+	}
 
 	/* Use the last possible DevID */
 	devid = GENMASK(device_ids(its) - 1, 0);
@@ -5007,14 +4941,29 @@ static int __init its_probe_one(struct resource *res,
 {
 	struct its_node *its;
 	void __iomem *its_base;
+	u32 val, ctlr;
 	u64 baser, tmp, typer;
 	struct page *page;
-	u32 ctlr;
 	int err;
 
-	its_base = its_map_one(res, &err);
-	if (!its_base)
-		return err;
+	its_base = ioremap(res->start, SZ_64K);
+	if (!its_base) {
+		pr_warn("ITS@%pa: Unable to map ITS registers\n", &res->start);
+		return -ENOMEM;
+	}
+
+	val = readl_relaxed(its_base + GITS_PIDR2) & GIC_PIDR2_ARCH_MASK;
+	if (val != 0x30 && val != 0x40) {
+		pr_warn("ITS@%pa: No ITS detected, giving up\n", &res->start);
+		err = -ENODEV;
+		goto out_unmap;
+	}
+
+	err = its_force_quiescent(its_base);
+	if (err) {
+		pr_warn("ITS@%pa: Failed to quiesce, giving up\n", &res->start);
+		goto out_unmap;
+	}
 
 	pr_info("ITS %pR\n", res);
 
@@ -5170,7 +5119,7 @@ static int redist_disable_lpis(void)
 	 *
 	 * If running with preallocated tables, there is nothing to do.
 	 */
-	if ((gic_data_rdist()->flags & RD_LOCAL_LPI_ENABLED) ||
+	if (gic_data_rdist()->lpi_enabled ||
 	    (gic_rdists->flags & RDIST_FLAGS_RD_TABLES_PREALLOCATED))
 		return 0;
 
@@ -5232,69 +5181,6 @@ int its_cpu_init(void)
 	return 0;
 }
 
-static void rdist_memreserve_cpuhp_cleanup_workfn(struct work_struct *work)
-{
-	cpuhp_remove_state_nocalls(gic_rdists->cpuhp_memreserve_state);
-	gic_rdists->cpuhp_memreserve_state = CPUHP_INVALID;
-}
-
-static DECLARE_WORK(rdist_memreserve_cpuhp_cleanup_work,
-		    rdist_memreserve_cpuhp_cleanup_workfn);
-
-static int its_cpu_memreserve_lpi(unsigned int cpu)
-{
-	struct page *pend_page;
-	int ret = 0;
-
-	/* This gets to run exactly once per CPU */
-	if (gic_data_rdist()->flags & RD_LOCAL_MEMRESERVE_DONE)
-		return 0;
-
-	pend_page = gic_data_rdist()->pend_page;
-	if (WARN_ON(!pend_page)) {
-		ret = -ENOMEM;
-		goto out;
-	}
-	/*
-	 * If the pending table was pre-programmed, free the memory we
-	 * preemptively allocated. Otherwise, reserve that memory for
-	 * later kexecs.
-	 */
-	if (gic_data_rdist()->flags & RD_LOCAL_PENDTABLE_PREALLOCATED) {
-		its_free_pending_table(pend_page);
-		gic_data_rdist()->pend_page = NULL;
-	} else {
-		phys_addr_t paddr = page_to_phys(pend_page);
-		WARN_ON(gic_reserve_range(paddr, LPI_PENDBASE_SZ));
-	}
-
-out:
-	/* Last CPU being brought up gets to issue the cleanup */
-	if (!IS_ENABLED(CONFIG_SMP) ||
-	    cpumask_equal(&cpus_booted_once_mask, cpu_possible_mask))
-		schedule_work(&rdist_memreserve_cpuhp_cleanup_work);
-
-	gic_data_rdist()->flags |= RD_LOCAL_MEMRESERVE_DONE;
-	return ret;
-}
-
-/* Mark all the BASER registers as invalid before they get reprogrammed */
-static int __init its_reset_one(struct resource *res)
-{
-	void __iomem *its_base;
-	int err, i;
-
-	its_base = its_map_one(res, &err);
-	if (!its_base)
-		return err;
-
-	for (i = 0; i < GITS_BASER_NR_REGS; i++)
-		gits_write_baser(0, its_base + GITS_BASER + (i << 3));
-
-	iounmap(its_base);
-	return 0;
-}
-
 static const struct of_device_id its_device_id[] = {
 	{	.compatible	= "arm,gic-v3-its",	},
 	{},
@@ -5304,26 +5190,6 @@ static int __init its_of_probe(struct device_node *node)
 {
 	struct device_node *np;
 	struct resource res;
-
-	/*
-	 * Make sure *all* the ITS are reset before we probe any, as
-	 * they may be sharing memory. If any of the ITS fails to
-	 * reset, don't even try to go any further, as this could
-	 * result in something even worse.
-	 */
-	for (np = of_find_matching_node(node, its_device_id); np;
-	     np = of_find_matching_node(np, its_device_id)) {
-		int err;
-
-		if (!of_device_is_available(np) ||
-		    !of_property_read_bool(np, "msi-controller") ||
-		    of_address_to_resource(np, 0, &res))
-			continue;
-
-		err = its_reset_one(&res);
-		if (err)
-			return err;
-	}
 
 	for (np = of_find_matching_node(node, its_device_id); np;
 	     np = of_find_matching_node(np, its_device_id)) {
@@ -5427,8 +5293,10 @@ static void __init acpi_table_parse_srat_its(void)
 
 	its_srat_maps = kmalloc_array(count, sizeof(struct its_srat_map),
 				      GFP_KERNEL);
-	if (!its_srat_maps)
+	if (!its_srat_maps) {
+		pr_warn("SRAT: Failed to allocate memory for its_srat_maps!\n");
 		return;
+	}
 
 	acpi_table_parse_entries(ACPI_SIG_SRAT,
 			sizeof(struct acpi_table_srat),
@@ -5487,63 +5355,16 @@ dom_err:
 	return err;
 }
 
-static int __init its_acpi_reset(union acpi_subtable_headers *header,
-				 const unsigned long end)
-{
-	struct acpi_madt_generic_translator *its_entry;
-	struct resource res;
-
-	its_entry = (struct acpi_madt_generic_translator *)header;
-	res = (struct resource) {
-		.start	= its_entry->base_address,
-		.end	= its_entry->base_address + ACPI_GICV3_ITS_MEM_SIZE - 1,
-		.flags	= IORESOURCE_MEM,
-	};
-
-	return its_reset_one(&res);
-}
-
 static void __init its_acpi_probe(void)
 {
 	acpi_table_parse_srat_its();
-	/*
-	 * Make sure *all* the ITS are reset before we probe any, as
-	 * they may be sharing memory. If any of the ITS fails to
-	 * reset, don't even try to go any further, as this could
-	 * result in something even worse.
-	 */
-	if (acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_TRANSLATOR,
-				  its_acpi_reset, 0) > 0)
-		acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_TRANSLATOR,
-				      gic_acpi_parse_madt_its, 0);
+	acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_TRANSLATOR,
+			      gic_acpi_parse_madt_its, 0);
 	acpi_its_srat_maps_free();
 }
 #else
 static void __init its_acpi_probe(void) { }
 #endif
-
-int __init its_lpi_memreserve_init(void)
-{
-	int state;
-
-	if (!efi_enabled(EFI_CONFIG_TABLES))
-		return 0;
-
-	if (list_empty(&its_nodes))
-		return 0;
-
-	gic_rdists->cpuhp_memreserve_state = CPUHP_INVALID;
-	state = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
-				  "irqchip/arm/gicv3/memreserve:online",
-				  its_cpu_memreserve_lpi,
-				  NULL);
-	if (state < 0)
-		return state;
-
-	gic_rdists->cpuhp_memreserve_state = state;
-
-	return 0;
-}
 
 int __init its_init(struct fwnode_handle *handle, struct rdists *rdists,
 		    struct irq_domain *parent_domain)

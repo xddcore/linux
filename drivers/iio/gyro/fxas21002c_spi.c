@@ -34,9 +34,11 @@ static int fxas21002c_spi_probe(struct spi_device *spi)
 	return fxas21002c_core_probe(&spi->dev, regmap, spi->irq, id->name);
 }
 
-static void fxas21002c_spi_remove(struct spi_device *spi)
+static int fxas21002c_spi_remove(struct spi_device *spi)
 {
 	fxas21002c_core_remove(&spi->dev);
+
+	return 0;
 }
 
 static const struct spi_device_id fxas21002c_spi_id[] = {

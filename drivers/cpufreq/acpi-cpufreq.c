@@ -78,8 +78,6 @@ static bool boost_state(unsigned int cpu)
 
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_INTEL:
-	case X86_VENDOR_CENTAUR:
-	case X86_VENDOR_ZHAOXIN:
 		rdmsr_on_cpu(cpu, MSR_IA32_MISC_ENABLE, &lo, &hi);
 		msr = lo | ((u64)hi << 32);
 		return !(msr & MSR_IA32_MISC_ENABLE_TURBO_DISABLE);
@@ -99,8 +97,6 @@ static int boost_set_msr(bool enable)
 
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_INTEL:
-	case X86_VENDOR_CENTAUR:
-	case X86_VENDOR_ZHAOXIN:
 		msr_addr = MSR_IA32_MISC_ENABLE;
 		msr_mask = MSR_IA32_MISC_ENABLE_TURBO_DISABLE;
 		break;
@@ -167,9 +163,9 @@ static ssize_t store_cpb(struct cpufreq_policy *policy, const char *buf,
 	if (ret || val > 1)
 		return -EINVAL;
 
-	cpus_read_lock();
+	get_online_cpus();
 	set_boost(policy, val);
-	cpus_read_unlock();
+	put_online_cpus();
 
 	return count;
 }
@@ -474,8 +470,7 @@ static unsigned int acpi_cpufreq_fast_switch(struct cpufreq_policy *policy,
 	if (policy->cached_target_freq == target_freq)
 		index = policy->cached_resolved_idx;
 	else
-		index = cpufreq_table_find_index_dl(policy, target_freq,
-						    false);
+		index = cpufreq_table_find_index_dl(policy, target_freq);
 
 	entry = &policy->freq_table[index];
 	next_freq = entry->frequency;
@@ -651,11 +646,7 @@ static u64 get_max_boost_ratio(unsigned int cpu)
 		return 0;
 	}
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
-		highest_perf = amd_get_highest_perf();
-	else
-		highest_perf = perf_caps.highest_perf;
-
+	highest_perf = perf_caps.highest_perf;
 	nominal_perf = perf_caps.nominal_perf;
 
 	if (!highest_perf || !nominal_perf) {
@@ -894,9 +885,6 @@ static int acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	policy->fast_switch_possible = !acpi_pstate_strict &&
 		!(policy_is_shared(policy) && policy->shared_type != CPUFREQ_SHARED_TYPE_ANY);
 
-	if (perf->states[0].core_frequency * 1000 != freq_table[0].frequency)
-		pr_warn(FW_WARN "P-state 0 is not max freq\n");
-
 	return result;
 
 err_unreg:
@@ -926,6 +914,16 @@ static int acpi_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	return 0;
 }
 
+static void acpi_cpufreq_cpu_ready(struct cpufreq_policy *policy)
+{
+	struct acpi_processor_performance *perf = per_cpu_ptr(acpi_perf_data,
+							      policy->cpu);
+	unsigned int freq = policy->freq_table[0].frequency;
+
+	if (perf->states[0].core_frequency * 1000 != freq)
+		pr_warn(FW_WARN "P-state 0 is not max freq\n");
+}
+
 static int acpi_cpufreq_resume(struct cpufreq_policy *policy)
 {
 	struct acpi_cpufreq_data *data = policy->driver_data;
@@ -953,6 +951,7 @@ static struct cpufreq_driver acpi_cpufreq_driver = {
 	.bios_limit	= acpi_processor_get_bios_limit,
 	.init		= acpi_cpufreq_cpu_init,
 	.exit		= acpi_cpufreq_cpu_exit,
+	.ready		= acpi_cpufreq_cpu_ready,
 	.resume		= acpi_cpufreq_resume,
 	.name		= "acpi-cpufreq",
 	.attr		= acpi_cpufreq_attr,

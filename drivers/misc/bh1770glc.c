@@ -1280,7 +1280,7 @@ fail0:
 	return err;
 }
 
-static void bh1770_remove(struct i2c_client *client)
+static int bh1770_remove(struct i2c_client *client)
 {
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 
@@ -1299,6 +1299,8 @@ static void bh1770_remove(struct i2c_client *client)
 
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

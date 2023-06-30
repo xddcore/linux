@@ -507,7 +507,7 @@ static int zd1201_getconfig(struct zd1201 *zd, int rid, void *riddata,
  *		byte	data[12]
  *	total: 16
  */
-static int zd1201_setconfig(struct zd1201 *zd, int rid, const void *buf, int len, int wait)
+static int zd1201_setconfig(struct zd1201 *zd, int rid, void *buf, int len, int wait)
 {
 	int err;
 	unsigned char *request;
@@ -521,7 +521,7 @@ static int zd1201_setconfig(struct zd1201 *zd, int rid, const void *buf, int len
 	zd->rxdatas = 0;
 	zd->rxlen = 0;
 	for (seq=0; len > 0; seq++) {
-		request = kzalloc(16, gfp_mask);
+		request = kmalloc(16, gfp_mask);
 		if (!request)
 			return -ENOMEM;
 		urb = usb_alloc_urb(0, gfp_mask);
@@ -529,6 +529,7 @@ static int zd1201_setconfig(struct zd1201 *zd, int rid, const void *buf, int len
 			kfree(request);
 			return -ENOMEM;
 		}
+		memset(request, 0, 16);
 		reqlen = len>12 ? 12 : len;
 		request[0] = ZD1201_USB_RESREQ;
 		request[1] = seq;
@@ -856,7 +857,7 @@ static int zd1201_set_mac_address(struct net_device *dev, void *p)
 	    addr->sa_data, dev->addr_len, 1);
 	if (err)
 		return err;
-	eth_hw_addr_set(dev, addr->sa_data);
+	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
 	return zd1201_mac_reset(zd);
 }
@@ -965,7 +966,7 @@ static int zd1201_set_mode(struct net_device *dev,
 			 */
 			zd1201_join(zd, "\0-*#\0", 5);
 			/* Put port in pIBSS */
-			fallthrough;
+			/* Fall through */
 		case 8: /* No pseudo-IBSS in wireless extensions (yet) */
 			porttype = ZD1201_PORTTYPE_PSEUDOIBSS;
 			break;
@@ -1728,7 +1729,6 @@ static int zd1201_probe(struct usb_interface *interface,
 	int err;
 	short porttype;
 	char buf[IW_ESSID_MAX_SIZE+2];
-	u8 addr[ETH_ALEN];
 
 	usb = interface_to_usbdev(interface);
 
@@ -1779,10 +1779,10 @@ static int zd1201_probe(struct usb_interface *interface,
 	dev->watchdog_timeo = ZD1201_TX_TIMEOUT;
 	strcpy(dev->name, "wlan%d");
 
-	err = zd1201_getconfig(zd, ZD1201_RID_CNFOWNMACADDR, addr, ETH_ALEN);
+	err = zd1201_getconfig(zd, ZD1201_RID_CNFOWNMACADDR, 
+	    dev->dev_addr, dev->addr_len);
 	if (err)
 		goto err_start;
-	eth_hw_addr_set(dev, addr);
 
 	/* Set wildcard essid to match zd->essid */
 	*(__le16 *)buf = cpu_to_le16(0);

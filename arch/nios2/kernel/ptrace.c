@@ -15,6 +15,7 @@
 #include <linux/regset.h>
 #include <linux/sched.h>
 #include <linux/sched/task_stack.h>
+#include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <linux/user.h>
 
@@ -133,7 +134,7 @@ asmlinkage int do_syscall_trace_enter(void)
 	int ret = 0;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		ret = ptrace_report_syscall_entry(task_pt_regs(current));
+		ret = tracehook_report_syscall_entry(task_pt_regs(current));
 
 	return ret;
 }
@@ -141,5 +142,5 @@ asmlinkage int do_syscall_trace_enter(void)
 asmlinkage void do_syscall_trace_exit(void)
 {
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		ptrace_report_syscall_exit(task_pt_regs(current), 0);
+		tracehook_report_syscall_exit(task_pt_regs(current), 0);
 }

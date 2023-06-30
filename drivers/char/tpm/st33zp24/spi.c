@@ -381,11 +381,16 @@ static int st33zp24_spi_probe(struct spi_device *dev)
  * @param: client, the spi_device description (TPM SPI description).
  * @return: 0 in case of success.
  */
-static void st33zp24_spi_remove(struct spi_device *dev)
+static int st33zp24_spi_remove(struct spi_device *dev)
 {
 	struct tpm_chip *chip = spi_get_drvdata(dev);
+	int ret;
 
-	st33zp24_remove(chip);
+	ret = st33zp24_remove(chip);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 static const struct spi_device_id st33zp24_spi_id[] = {

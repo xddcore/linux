@@ -20,9 +20,7 @@
 #include <linux/irq.h>
 #include <linux/spinlock.h>
 #include <linux/htcpld.h>
-#include <linux/gpio/driver.h>
-#include <linux/gpio/machine.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/slab.h>
 
 struct htcpld_chip {
@@ -60,8 +58,8 @@ struct htcpld_data {
 	uint               irq_start;
 	int                nirqs;
 	uint               chained_irq;
-	struct gpio_desc   *int_reset_gpio_hi;
-	struct gpio_desc   *int_reset_gpio_lo;
+	unsigned int       int_reset_gpio_hi;
+	unsigned int       int_reset_gpio_lo;
 
 	/* htcpld info */
 	struct htcpld_chip *chip;
@@ -198,9 +196,9 @@ static irqreturn_t htcpld_handler(int irq, void *dev)
 	 * be asserted.
 	 */
 	if (htcpld->int_reset_gpio_hi)
-		gpiod_set_value(htcpld->int_reset_gpio_hi, 1);
+		gpio_set_value(htcpld->int_reset_gpio_hi, 1);
 	if (htcpld->int_reset_gpio_lo)
-		gpiod_set_value(htcpld->int_reset_gpio_lo, 0);
+		gpio_set_value(htcpld->int_reset_gpio_lo, 0);
 
 	return IRQ_HANDLED;
 }
@@ -354,7 +352,7 @@ static int htcpld_register_chip_i2c(
 
 	memset(&info, 0, sizeof(struct i2c_board_info));
 	info.addr = plat_chip_data->addr;
-	strscpy(info.type, "htcpld-chip", I2C_NAME_SIZE);
+	strlcpy(info.type, "htcpld-chip", I2C_NAME_SIZE);
 	info.platform_data = chip;
 
 	/* Add the I2C device.  This calls the probe() function. */
@@ -564,28 +562,34 @@ static int htcpld_core_probe(struct platform_device *pdev)
 		return ret;
 
 	/* Request the GPIO(s) for the int reset and set them up */
-	htcpld->int_reset_gpio_hi = gpiochip_request_own_desc(&htcpld->chip[2].chip_out,
-							      7, "htcpld-core", GPIO_ACTIVE_HIGH,
-							      GPIOD_OUT_HIGH);
-	if (IS_ERR(htcpld->int_reset_gpio_hi)) {
-		/*
-		 * If it failed, that sucks, but we can probably
-		 * continue on without it.
-		 */
-		htcpld->int_reset_gpio_hi = NULL;
-		dev_warn(dev, "Unable to request int_reset_gpio_hi -- interrupts may not work\n");
+	if (pdata->int_reset_gpio_hi) {
+		ret = gpio_request(pdata->int_reset_gpio_hi, "htcpld-core");
+		if (ret) {
+			/*
+			 * If it failed, that sucks, but we can probably
+			 * continue on without it.
+			 */
+			dev_warn(dev, "Unable to request int_reset_gpio_hi -- interrupts may not work\n");
+			htcpld->int_reset_gpio_hi = 0;
+		} else {
+			htcpld->int_reset_gpio_hi = pdata->int_reset_gpio_hi;
+			gpio_set_value(htcpld->int_reset_gpio_hi, 1);
+		}
 	}
 
-	htcpld->int_reset_gpio_lo = gpiochip_request_own_desc(&htcpld->chip[2].chip_out,
-							      0, "htcpld-core", GPIO_ACTIVE_HIGH,
-							      GPIOD_OUT_LOW);
-	if (IS_ERR(htcpld->int_reset_gpio_lo)) {
-		/*
-		 * If it failed, that sucks, but we can probably
-		 * continue on without it.
-		 */
-		htcpld->int_reset_gpio_lo = NULL;
-		dev_warn(dev, "Unable to request int_reset_gpio_lo -- interrupts may not work\n");
+	if (pdata->int_reset_gpio_lo) {
+		ret = gpio_request(pdata->int_reset_gpio_lo, "htcpld-core");
+		if (ret) {
+			/*
+			 * If it failed, that sucks, but we can probably
+			 * continue on without it.
+			 */
+			dev_warn(dev, "Unable to request int_reset_gpio_lo -- interrupts may not work\n");
+			htcpld->int_reset_gpio_lo = 0;
+		} else {
+			htcpld->int_reset_gpio_lo = pdata->int_reset_gpio_lo;
+			gpio_set_value(htcpld->int_reset_gpio_lo, 0);
+		}
 	}
 
 	dev_info(dev, "Initialized successfully\n");

@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * This file is licensed under the terms of the GNU General Public License
+ * version 2.  This program is licensed "as is" without any warranty of any
+ * kind, whether express or implied.
+ */
 
 #include <dt-bindings/bus/ti-sysc.h>
 #include <dt-bindings/clock/dm816.h>
@@ -310,6 +314,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			interrupts = <70>;
+			dmas = <&edma 58 0 &edma 59 0>;
+			dma-names = "tx", "rx";
 		};
 
 		i2c2: i2c@4802a000 {
@@ -319,6 +325,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			interrupts = <71>;
+			dmas = <&edma 60 0 &edma 61 0>;
+			dma-names = "tx", "rx";
 		};
 
 		intc: interrupt-controller@48200000 {
@@ -651,11 +659,8 @@
 				interrupts = <17>;
 				interrupt-names = "glue";
 				#dma-cells = <2>;
-				/* For backwards compatibility: */
 				#dma-channels = <30>;
-				dma-channels = <30>;
 				#dma-requests = <256>;
-				dma-requests = <256>;
 			};
 		};
 

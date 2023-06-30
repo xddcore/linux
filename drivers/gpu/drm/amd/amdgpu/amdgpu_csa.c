@@ -37,9 +37,10 @@ uint64_t amdgpu_csa_vaddr(struct amdgpu_device *adev)
 int amdgpu_allocate_static_csa(struct amdgpu_device *adev, struct amdgpu_bo **bo,
 				u32 domain, uint32_t size)
 {
+	int r;
 	void *ptr;
 
-	amdgpu_bo_create_kernel(adev, size, PAGE_SIZE,
+	r = amdgpu_bo_create_kernel(adev, size, PAGE_SIZE,
 				domain, bo,
 				NULL, &ptr);
 	if (!*bo)
@@ -98,7 +99,7 @@ int amdgpu_map_static_csa(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 
 	if (r) {
 		DRM_ERROR("failed to do bo_map on static CSA, err=%d\n", r);
-		amdgpu_vm_bo_del(adev, *bo_va);
+		amdgpu_vm_bo_rmv(adev, *bo_va);
 		ttm_eu_backoff_reservation(&ticket, &list);
 		return r;
 	}

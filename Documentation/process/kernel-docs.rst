@@ -1,10 +1,9 @@
 .. _kernel_docs:
 
-Index of Further Kernel Documentation
-=====================================
+Index of Documentation for People Interested in Writing and/or Understanding the Linux Kernel
+=============================================================================================
 
-Initial Author: Juan-Mariano de Goyeneche (<jmseyas@dit.upm.es>;
-email address is defunct now.)
+          Juan-Mariano de Goyeneche <jmseyas@dit.upm.es>
 
 The need for a document like this one became apparent in the
 linux-kernel mailing list as the same questions, asking for pointers
@@ -17,16 +16,21 @@ philosophy and design decisions behind this code.
 
 Unfortunately, not many documents are available for beginners to
 start. And, even if they exist, there was no "well-known" place which
-kept track of them. These lines try to cover this lack.
+kept track of them. These lines try to cover this lack. All documents
+available on line known by the author are listed, while some reference
+books are also mentioned.
 
 PLEASE, if you know any paper not listed here or write a new document,
-include a reference to it here, following the kernel's patch submission
-process. Any corrections, ideas or comments are also welcome.
+send me an e-mail, and I'll include a reference to it here. Any
+corrections, ideas or comments are also welcomed.
 
-All documents are cataloged with the following fields: the document's
-"Title", the "Author"/s, the "URL" where they can be found, some
-"Keywords" helpful when searching for specific topics, and a brief
-"Description" of the Document.
+The papers that follow are listed in no particular order. All are
+cataloged with the following fields: the document's "Title", the
+"Author"/s, the "URL" where they can be found, some "Keywords" helpful
+when searching for specific topics, and a brief "Description" of the
+Document.
+
+Enjoy!
 
 .. note::
 
@@ -79,18 +83,6 @@ On-line docs
         Finally this trace-log is used as base for more a exact conceptual
         exploration and description of the Linux TCP/IP implementation.*
 
-    * Title: **The Linux Kernel Module Programming Guide**
-
-      :Author: Peter Jay Salzman, Michael Burian, Ori Pomerantz, Bob Mottram,
-        Jim Huang.
-      :URL: https://sysprog21.github.io/lkmpg/
-      :Date: 2021
-      :Keywords: modules, GPL book, /proc, ioctls, system calls,
-        interrupt handlers .
-      :Description: A very nice GPL book on the topic of modules
-        programming. Lots of examples. Currently the new version is being
-        actively maintained at https://github.com/sysprog21/lkmpg.
-
     * Title: **On submitting kernel Patches**
 
       :Author: Andi Kleen
@@ -98,7 +90,7 @@ On-line docs
       :Date: 2008
       :Keywords: patches, review process, types of submissions, basic rules, case studies
       :Description: This paper gives several experience values on what types of patches
-        there are and how likely they get merged.
+        there are and how likley they get merged.
       :Abstract:
         [...]. This paper examines some common problems for
         submitting larger changes and some strategies to avoid problems.
@@ -116,7 +108,7 @@ On-line docs
     * Title: **Writing an ALSA Driver**
 
       :Author: Takashi Iwai <tiwai@suse.de>
-      :URL: https://www.kernel.org/doc/html/latest/sound/kernel-api/writing-an-alsa-driver.html
+      :URL: http://www.alsa-project.org/~iwai/writing-an-alsa-driver/index.html
       :Date: 2005
       :Keywords: ALSA, sound, soundcard, driver, lowlevel, hardware.
       :Description: Advanced Linux Sound Architecture for developers,
@@ -134,19 +126,15 @@ On-line docs
         describes how to write user-mode utilities for communicating with
         Card Services.
 
-    * Title: **How NOT to write kernel drivers**
+    * Title: **Linux Kernel Module Programming Guide**
 
-      :Author: Arjan van de Ven.
-      :URL: https://landley.net/kdocs/ols/2002/ols2002-pages-545-555.pdf
-      :Date: 2002
-      :Keywords: driver.
-      :Description: Programming bugs and Do-nots in kernel driver development
-      :Abstract: *Quit a few tutorials, articles and books give an introduction
-        on how to write Linux kernel drivers. Unfortunately the things one
-        should NOT do in Linux kernel code is either only a minor appendix
-        or, more commonly, completely absent. This paper tries to briefly touch
-        the areas in which the most common and serious bugs and do-nots are
-        encountered.*
+      :Author: Ori Pomerantz.
+      :URL: https://tldp.org/LDP/lkmpg/2.6/html/index.html
+      :Date: 2001
+      :Keywords: modules, GPL book, /proc, ioctls, system calls,
+        interrupt handlers .
+      :Description: Very nice 92 pages GPL book on the topic of modules
+        programming. Lots of examples.
 
     * Title: **Global spinlock list and usage**
 
@@ -340,7 +328,7 @@ On-line docs
         block devices, hardware interrupts, scsi, DMA, access to user memory,
         memory allocation, timers.
       :Description: A guide designed to help you get up to speed on the
-        concepts that are not intuitively obvious, and to document the internal
+        concepts that are not intuitevly obvious, and to document the internal
         structures of Linux.
 
     * Title: **Dynamic Kernels: Modularized Device Drivers**

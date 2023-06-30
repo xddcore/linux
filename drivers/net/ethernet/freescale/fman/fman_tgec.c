@@ -1,13 +1,39 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-or-later
 /*
- * Copyright 2008 - 2015 Freescale Semiconductor Inc.
+ * Copyright 2008-2015 Freescale Semiconductor Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Freescale Semiconductor nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *
+ * ALTERNATIVELY, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") as published by the Free Software
+ * Foundation, either version 2 of that License or (at your option) any
+ * later version.
+ *
+ * THIS SOFTWARE IS PROVIDED BY Freescale Semiconductor ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL Freescale Semiconductor BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include "fman_tgec.h"
 #include "fman.h"
-#include "mac.h"
 
 #include <linux/slab.h>
 #include <linux/bitrev.h>
@@ -180,7 +206,7 @@ struct fman_mac {
 	/* MAC address of device; */
 	u64 addr;
 	u16 max_speed;
-	struct mac_device *dev_id; /* device cookie used by the exception cbs */
+	void *dev_id; /* device cookie used by the exception cbs */
 	fman_mac_exception_cb *exception_cb;
 	fman_mac_exception_cb *event_cb;
 	/* pointer to driver's global address hash table  */
@@ -195,7 +221,7 @@ struct fman_mac {
 	bool allmulti_enabled;
 };
 
-static void set_mac_address(struct tgec_regs __iomem *regs, const u8 *adr)
+static void set_mac_address(struct tgec_regs __iomem *regs, u8 *adr)
 {
 	u32 tmp0, tmp1;
 
@@ -393,7 +419,7 @@ static bool is_init_done(struct tgec_cfg *cfg)
 	return false;
 }
 
-static int tgec_enable(struct fman_mac *tgec)
+int tgec_enable(struct fman_mac *tgec, enum comm_mode mode)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 tmp;
@@ -402,25 +428,34 @@ static int tgec_enable(struct fman_mac *tgec)
 		return -EINVAL;
 
 	tmp = ioread32be(&regs->command_config);
-	tmp |= CMD_CFG_RX_EN | CMD_CFG_TX_EN;
+	if (mode & COMM_MODE_RX)
+		tmp |= CMD_CFG_RX_EN;
+	if (mode & COMM_MODE_TX)
+		tmp |= CMD_CFG_TX_EN;
 	iowrite32be(tmp, &regs->command_config);
 
 	return 0;
 }
 
-static void tgec_disable(struct fman_mac *tgec)
+int tgec_disable(struct fman_mac *tgec, enum comm_mode mode)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 tmp;
 
-	WARN_ON_ONCE(!is_init_done(tgec->cfg));
+	if (!is_init_done(tgec->cfg))
+		return -EINVAL;
 
 	tmp = ioread32be(&regs->command_config);
-	tmp &= ~(CMD_CFG_RX_EN | CMD_CFG_TX_EN);
+	if (mode & COMM_MODE_RX)
+		tmp &= ~CMD_CFG_RX_EN;
+	if (mode & COMM_MODE_TX)
+		tmp &= ~CMD_CFG_TX_EN;
 	iowrite32be(tmp, &regs->command_config);
+
+	return 0;
 }
 
-static int tgec_set_promiscuous(struct fman_mac *tgec, bool new_val)
+int tgec_set_promiscuous(struct fman_mac *tgec, bool new_val)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 tmp;
@@ -438,9 +473,18 @@ static int tgec_set_promiscuous(struct fman_mac *tgec, bool new_val)
 	return 0;
 }
 
-static int tgec_set_tx_pause_frames(struct fman_mac *tgec,
-				    u8 __maybe_unused priority, u16 pause_time,
-				    u16 __maybe_unused thresh_time)
+int tgec_cfg_max_frame_len(struct fman_mac *tgec, u16 new_val)
+{
+	if (is_init_done(tgec->cfg))
+		return -EINVAL;
+
+	tgec->cfg->max_frame_length = new_val;
+
+	return 0;
+}
+
+int tgec_set_tx_pause_frames(struct fman_mac *tgec, u8 __maybe_unused priority,
+			     u16 pause_time, u16 __maybe_unused thresh_time)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 
@@ -452,7 +496,7 @@ static int tgec_set_tx_pause_frames(struct fman_mac *tgec,
 	return 0;
 }
 
-static int tgec_accept_rx_pause_frames(struct fman_mac *tgec, bool en)
+int tgec_accept_rx_pause_frames(struct fman_mac *tgec, bool en)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 tmp;
@@ -470,20 +514,18 @@ static int tgec_accept_rx_pause_frames(struct fman_mac *tgec, bool en)
 	return 0;
 }
 
-static int tgec_modify_mac_address(struct fman_mac *tgec,
-				   const enet_addr_t *p_enet_addr)
+int tgec_modify_mac_address(struct fman_mac *tgec, enet_addr_t *p_enet_addr)
 {
 	if (!is_init_done(tgec->cfg))
 		return -EINVAL;
 
 	tgec->addr = ENET_ADDR_TO_UINT64(*p_enet_addr);
-	set_mac_address(tgec->regs, (const u8 *)(*p_enet_addr));
+	set_mac_address(tgec->regs, (u8 *)(*p_enet_addr));
 
 	return 0;
 }
 
-static int tgec_add_hash_mac_address(struct fman_mac *tgec,
-				     enet_addr_t *eth_addr)
+int tgec_add_hash_mac_address(struct fman_mac *tgec, enet_addr_t *eth_addr)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	struct eth_hash_entry *hash_entry;
@@ -520,7 +562,7 @@ static int tgec_add_hash_mac_address(struct fman_mac *tgec,
 	return 0;
 }
 
-static int tgec_set_allmulti(struct fman_mac *tgec, bool enable)
+int tgec_set_allmulti(struct fman_mac *tgec, bool enable)
 {
 	u32 entry;
 	struct tgec_regs __iomem *regs = tgec->regs;
@@ -543,7 +585,7 @@ static int tgec_set_allmulti(struct fman_mac *tgec, bool enable)
 	return 0;
 }
 
-static int tgec_set_tstamp(struct fman_mac *tgec, bool enable)
+int tgec_set_tstamp(struct fman_mac *tgec, bool enable)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 tmp;
@@ -563,8 +605,7 @@ static int tgec_set_tstamp(struct fman_mac *tgec, bool enable)
 	return 0;
 }
 
-static int tgec_del_hash_mac_address(struct fman_mac *tgec,
-				     enet_addr_t *eth_addr)
+int tgec_del_hash_mac_address(struct fman_mac *tgec, enet_addr_t *eth_addr)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	struct eth_hash_entry *hash_entry = NULL;
@@ -601,15 +642,20 @@ static int tgec_del_hash_mac_address(struct fman_mac *tgec,
 	return 0;
 }
 
-static void tgec_adjust_link(struct mac_device *mac_dev)
+int tgec_get_version(struct fman_mac *tgec, u32 *mac_version)
 {
-	struct phy_device *phy_dev = mac_dev->phy_dev;
+	struct tgec_regs __iomem *regs = tgec->regs;
 
-	mac_dev->update_speed(mac_dev, phy_dev->speed);
+	if (!is_init_done(tgec->cfg))
+		return -EINVAL;
+
+	*mac_version = ioread32be(&regs->tgec_id);
+
+	return 0;
 }
 
-static int tgec_set_exception(struct fman_mac *tgec,
-			      enum fman_mac_exceptions exception, bool enable)
+int tgec_set_exception(struct fman_mac *tgec,
+		       enum fman_mac_exceptions exception, bool enable)
 {
 	struct tgec_regs __iomem *regs = tgec->regs;
 	u32 bit_mask = 0;
@@ -635,7 +681,7 @@ static int tgec_set_exception(struct fman_mac *tgec,
 	return 0;
 }
 
-static int tgec_init(struct fman_mac *tgec)
+int tgec_init(struct fman_mac *tgec)
 {
 	struct tgec_cfg *cfg;
 	enet_addr_t eth_addr;
@@ -658,7 +704,7 @@ static int tgec_init(struct fman_mac *tgec)
 
 	if (tgec->addr) {
 		MAKE_ENET_ADDR_FROM_UINT64(tgec->addr, eth_addr);
-		set_mac_address(tgec->regs, (const u8 *)eth_addr);
+		set_mac_address(tgec->regs, (u8 *)eth_addr);
 	}
 
 	/* interrupts */
@@ -718,7 +764,7 @@ static int tgec_init(struct fman_mac *tgec)
 	return 0;
 }
 
-static int tgec_free(struct fman_mac *tgec)
+int tgec_free(struct fman_mac *tgec)
 {
 	free_init_resources(tgec);
 
@@ -728,12 +774,13 @@ static int tgec_free(struct fman_mac *tgec)
 	return 0;
 }
 
-static struct fman_mac *tgec_config(struct mac_device *mac_dev,
-				    struct fman_mac_params *params)
+struct fman_mac *tgec_config(struct fman_mac_params *params)
 {
 	struct fman_mac *tgec;
 	struct tgec_cfg *cfg;
+	void __iomem *base_addr;
 
+	base_addr = params->base_addr;
 	/* allocate memory for the UCC GETH data structure. */
 	tgec = kzalloc(sizeof(*tgec), GFP_KERNEL);
 	if (!tgec)
@@ -751,8 +798,8 @@ static struct fman_mac *tgec_config(struct mac_device *mac_dev,
 
 	set_dflts(cfg);
 
-	tgec->regs = mac_dev->vaddr;
-	tgec->addr = ENET_ADDR_TO_UINT64(mac_dev->addr);
+	tgec->regs = base_addr;
+	tgec->addr = ENET_ADDR_TO_UINT64(params->addr);
 	tgec->max_speed = params->max_speed;
 	tgec->mac_id = params->mac_id;
 	tgec->exceptions = (TGEC_IMASK_MDIO_SCAN_EVENT	|
@@ -772,60 +819,11 @@ static struct fman_mac *tgec_config(struct mac_device *mac_dev,
 			    TGEC_IMASK_RX_ALIGN_ER);
 	tgec->exception_cb = params->exception_cb;
 	tgec->event_cb = params->event_cb;
-	tgec->dev_id = mac_dev;
+	tgec->dev_id = params->dev_id;
 	tgec->fm = params->fm;
 
 	/* Save FMan revision */
 	fman_get_revision(tgec->fm, &tgec->fm_rev_info);
 
 	return tgec;
-}
-
-int tgec_initialization(struct mac_device *mac_dev,
-			struct device_node *mac_node,
-			struct fman_mac_params *params)
-{
-	int err;
-	struct fman_mac		*tgec;
-
-	mac_dev->set_promisc		= tgec_set_promiscuous;
-	mac_dev->change_addr		= tgec_modify_mac_address;
-	mac_dev->add_hash_mac_addr	= tgec_add_hash_mac_address;
-	mac_dev->remove_hash_mac_addr	= tgec_del_hash_mac_address;
-	mac_dev->set_tx_pause		= tgec_set_tx_pause_frames;
-	mac_dev->set_rx_pause		= tgec_accept_rx_pause_frames;
-	mac_dev->set_exception		= tgec_set_exception;
-	mac_dev->set_allmulti		= tgec_set_allmulti;
-	mac_dev->set_tstamp		= tgec_set_tstamp;
-	mac_dev->set_multi		= fman_set_multi;
-	mac_dev->adjust_link            = tgec_adjust_link;
-	mac_dev->enable			= tgec_enable;
-	mac_dev->disable		= tgec_disable;
-
-	mac_dev->fman_mac = tgec_config(mac_dev, params);
-	if (!mac_dev->fman_mac) {
-		err = -EINVAL;
-		goto _return;
-	}
-
-	tgec = mac_dev->fman_mac;
-	tgec->cfg->max_frame_length = fman_get_max_frm();
-	err = tgec_init(tgec);
-	if (err < 0)
-		goto _return_fm_mac_free;
-
-	/* For 10G MAC, disable Tx ECC exception */
-	err = tgec_set_exception(tgec, FM_MAC_EX_10G_TX_ECC_ER, false);
-	if (err < 0)
-		goto _return_fm_mac_free;
-
-	pr_info("FMan XGEC version: 0x%08x\n",
-		ioread32be(&tgec->regs->tgec_id));
-	goto _return;
-
-_return_fm_mac_free:
-	tgec_free(mac_dev->fman_mac);
-
-_return:
-	return err;
 }

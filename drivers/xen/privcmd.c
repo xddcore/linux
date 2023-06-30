@@ -257,7 +257,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	LIST_HEAD(pagelist);
 	struct mmap_gfn_state state;
 
-	/* We only support privcmd_ioctl_mmap_batch for non-auto-translated. */
+	/* We only support privcmd_ioctl_mmap_batch for auto translated. */
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return -ENOSYS;
 
@@ -282,7 +282,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 						     struct page, lru);
 		struct privcmd_mmap_entry *msg = page_address(page);
 
-		vma = vma_lookup(mm, msg->va);
+		vma = find_vma(mm, msg->va);
 		rc = -EINVAL;
 
 		if (!vma || (msg->va != vma->vm_start) || vma->vm_private_data)
@@ -420,7 +420,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	int rc;
 	struct page **pages;
 
-	pages = kvcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
+	pages = kcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
 	if (pages == NULL)
 		return -ENOMEM;
 
@@ -428,7 +428,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	if (rc != 0) {
 		pr_warn("%s Could not alloc %d pfns rc:%d\n", __func__,
 			numpgs, rc);
-		kvfree(pages);
+		kfree(pages);
 		return -ENOMEM;
 	}
 	BUG_ON(vma->vm_private_data != NULL);
@@ -811,7 +811,8 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 						 kdata.addr & PAGE_MASK,
 						 pfns, kdata.num, errs,
 						 vma->vm_page_prot,
-						 domid);
+						 domid,
+						 vma->vm_private_data);
 		if (num < 0)
 			rc = num;
 		else if (num != kdata.num) {
@@ -913,7 +914,7 @@ static void privcmd_close(struct vm_area_struct *vma)
 	else
 		pr_crit("unable to unmap MFN range: leaking %d pages. rc=%d\n",
 			numpgs, rc);
-	kvfree(pages);
+	kfree(pages);
 }
 
 static vm_fault_t privcmd_fault(struct vm_fault *vmf)

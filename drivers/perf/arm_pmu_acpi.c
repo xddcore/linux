@@ -159,9 +159,7 @@ static int arm_pmu_acpi_parse_irqs(void)
 		 * them with their PMUs.
 		 */
 		per_cpu(pmu_irqs, cpu) = irq;
-		err = armpmu_request_irq(irq, cpu);
-		if (err)
-			goto out_err;
+		armpmu_request_irq(irq, cpu);
 	}
 
 	return 0;

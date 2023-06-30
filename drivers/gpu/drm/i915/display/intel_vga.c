@@ -7,7 +7,6 @@
 #include <linux/vgaarb.h>
 
 #include <drm/i915_drm.h>
-#include <video/vga.h>
 
 #include "i915_drv.h"
 #include "intel_de.h"
@@ -17,7 +16,7 @@ static i915_reg_t intel_vga_cntrl_reg(struct drm_i915_private *i915)
 {
 	if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915))
 		return VLV_VGACNTRL;
-	else if (DISPLAY_VER(i915) >= 5)
+	else if (INTEL_GEN(i915) >= 5)
 		return CPU_VGACNTRL;
 	else
 		return VGACNTRL;
@@ -26,18 +25,15 @@ static i915_reg_t intel_vga_cntrl_reg(struct drm_i915_private *i915)
 /* Disable the VGA plane that we never use */
 void intel_vga_disable(struct drm_i915_private *dev_priv)
 {
-	struct pci_dev *pdev = to_pci_dev(dev_priv->drm.dev);
+	struct pci_dev *pdev = dev_priv->drm.pdev;
 	i915_reg_t vga_reg = intel_vga_cntrl_reg(dev_priv);
 	u8 sr1;
 
-	if (intel_de_read(dev_priv, vga_reg) & VGA_DISP_DISABLE)
-		return;
-
 	/* WaEnableVGAAccessThroughIOPort:ctg,elk,ilk,snb,ivb,vlv,hsw */
 	vga_get_uninterruptible(pdev, VGA_RSRC_LEGACY_IO);
-	outb(0x01, VGA_SEQ_I);
-	sr1 = inb(VGA_SEQ_D);
-	outb(sr1 | VGA_SR01_SCREEN_OFF, VGA_SEQ_D);
+	outb(SR01, VGA_SR_INDEX);
+	sr1 = inb(VGA_SR_DATA);
+	outb(sr1 | 1 << 5, VGA_SR_DATA);
 	vga_put(pdev, VGA_RSRC_LEGACY_IO);
 	udelay(300);
 
@@ -80,7 +76,7 @@ void intel_vga_redisable(struct drm_i915_private *i915)
 
 void intel_vga_reset_io_mem(struct drm_i915_private *i915)
 {
-	struct pci_dev *pdev = to_pci_dev(i915->drm.dev);
+	struct pci_dev *pdev = i915->drm.pdev;
 
 	/*
 	 * After we re-enable the power well, if we touch VGA register 0x3d5
@@ -93,14 +89,14 @@ void intel_vga_reset_io_mem(struct drm_i915_private *i915)
 	 * and error messages.
 	 */
 	vga_get_uninterruptible(pdev, VGA_RSRC_LEGACY_IO);
-	outb(inb(VGA_MIS_R), VGA_MIS_W);
+	outb(inb(VGA_MSR_READ), VGA_MSR_WRITE);
 	vga_put(pdev, VGA_RSRC_LEGACY_IO);
 }
 
 static int
 intel_vga_set_state(struct drm_i915_private *i915, bool enable_decode)
 {
-	unsigned int reg = DISPLAY_VER(i915) >= 6 ? SNB_GMCH_CTRL : INTEL_GMCH_CTRL;
+	unsigned int reg = INTEL_GEN(i915) >= 6 ? SNB_GMCH_CTRL : INTEL_GMCH_CTRL;
 	u16 gmch_ctrl;
 
 	if (pci_read_config_word(i915->bridge_dev, reg, &gmch_ctrl)) {
@@ -125,9 +121,9 @@ intel_vga_set_state(struct drm_i915_private *i915, bool enable_decode)
 }
 
 static unsigned int
-intel_vga_set_decode(struct pci_dev *pdev, bool enable_decode)
+intel_vga_set_decode(void *cookie, bool enable_decode)
 {
-	struct drm_i915_private *i915 = pdev_to_i915(pdev);
+	struct drm_i915_private *i915 = cookie;
 
 	intel_vga_set_state(i915, enable_decode);
 
@@ -140,8 +136,7 @@ intel_vga_set_decode(struct pci_dev *pdev, bool enable_decode)
 
 int intel_vga_register(struct drm_i915_private *i915)
 {
-
-	struct pci_dev *pdev = to_pci_dev(i915->drm.dev);
+	struct pci_dev *pdev = i915->drm.pdev;
 	int ret;
 
 	/*
@@ -152,7 +147,7 @@ int intel_vga_register(struct drm_i915_private *i915)
 	 * then we do not take part in VGA arbitration and the
 	 * vga_client_register() fails with -ENODEV.
 	 */
-	ret = vga_client_register(pdev, intel_vga_set_decode);
+	ret = vga_client_register(pdev, i915, NULL, intel_vga_set_decode);
 	if (ret && ret != -ENODEV)
 		return ret;
 
@@ -161,7 +156,7 @@ int intel_vga_register(struct drm_i915_private *i915)
 
 void intel_vga_unregister(struct drm_i915_private *i915)
 {
-	struct pci_dev *pdev = to_pci_dev(i915->drm.dev);
+	struct pci_dev *pdev = i915->drm.pdev;
 
-	vga_client_unregister(pdev);
+	vga_client_register(pdev, NULL, NULL, NULL);
 }

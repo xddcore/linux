@@ -180,10 +180,12 @@ static int xgene_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/* HW does not support update faster than 1 seconds */
+	pdata->rtc->uie_unsupported = 1;
 	pdata->rtc->ops = &xgene_rtc_ops;
 	pdata->rtc->range_max = U32_MAX;
 
-	ret = devm_rtc_register_device(pdata->rtc);
+	ret = rtc_register_device(pdata->rtc);
 	if (ret) {
 		clk_disable_unprepare(pdata->clk);
 		return ret;

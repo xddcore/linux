@@ -106,7 +106,6 @@ enum icm_pkg_code {
 	ICM_APPROVE_XDOMAIN = 0x10,
 	ICM_DISCONNECT_XDOMAIN = 0x11,
 	ICM_PREBOOT_ACL = 0x18,
-	ICM_USB4_SWITCH_OP = 0x20,
 };
 
 enum icm_event_code {
@@ -344,8 +343,6 @@ struct icm_tr_pkg_driver_ready_response {
 #define ICM_TR_FLAGS_RTD3		BIT(6)
 
 #define ICM_TR_INFO_SLEVEL_MASK		GENMASK(2, 0)
-#define ICM_TR_INFO_PROTO_VERSION_MASK	GENMASK(6, 4)
-#define ICM_TR_INFO_PROTO_VERSION_SHIFT	4
 #define ICM_TR_INFO_BOOT_ACL_SHIFT	7
 #define ICM_TR_INFO_BOOT_ACL_MASK	GENMASK(12, 7)
 
@@ -481,31 +478,6 @@ struct icm_icl_event_rtd3_veto {
 	u32 veto_reason;
 };
 
-/* USB4 ICM messages */
-
-struct icm_usb4_switch_op {
-	struct icm_pkg_header hdr;
-	u32 route_hi;
-	u32 route_lo;
-	u32 metadata;
-	u16 opcode;
-	u16 data_len_valid;
-	u32 data[16];
-};
-
-#define ICM_USB4_SWITCH_DATA_LEN_MASK	GENMASK(3, 0)
-#define ICM_USB4_SWITCH_DATA_VALID	BIT(4)
-
-struct icm_usb4_switch_op_response {
-	struct icm_pkg_header hdr;
-	u32 route_hi;
-	u32 route_lo;
-	u32 metadata;
-	u16 opcode;
-	u16 status;
-	u32 data[16];
-};
-
 /* XDomain messages */
 
 struct tb_xdomain_header {
@@ -527,10 +499,6 @@ enum tb_xdp_type {
 	PROPERTIES_CHANGED_RESPONSE,
 	ERROR_RESPONSE,
 	UUID_REQUEST = 12,
-	LINK_STATE_STATUS_REQUEST = 15,
-	LINK_STATE_STATUS_RESPONSE,
-	LINK_STATE_CHANGE_REQUEST,
-	LINK_STATE_CHANGE_RESPONSE,
 };
 
 struct tb_xdp_header {
@@ -539,60 +507,15 @@ struct tb_xdp_header {
 	u32 type;
 };
 
-struct tb_xdp_error_response {
-	struct tb_xdp_header hdr;
-	u32 error;
-};
-
-struct tb_xdp_link_state_status {
-	struct tb_xdp_header hdr;
-};
-
-struct tb_xdp_link_state_status_response {
-	union {
-		struct tb_xdp_error_response err;
-		struct {
-			struct tb_xdp_header hdr;
-			u32 status;
-			u8 slw;
-			u8 tlw;
-			u8 sls;
-			u8 tls;
-		};
-	};
-};
-
-struct tb_xdp_link_state_change {
-	struct tb_xdp_header hdr;
-	u8 tlw;
-	u8 tls;
-	u16 reserved;
-};
-
-struct tb_xdp_link_state_change_response {
-	union {
-		struct tb_xdp_error_response err;
-		struct {
-			struct tb_xdp_header hdr;
-			u32 status;
-		};
-	};
-};
-
 struct tb_xdp_uuid {
 	struct tb_xdp_header hdr;
 };
 
 struct tb_xdp_uuid_response {
-	union {
-		struct tb_xdp_error_response err;
-		struct {
-			struct tb_xdp_header hdr;
-			uuid_t src_uuid;
-			u32 src_route_hi;
-			u32 src_route_lo;
-		};
-	};
+	struct tb_xdp_header hdr;
+	uuid_t src_uuid;
+	u32 src_route_hi;
+	u32 src_route_lo;
 };
 
 struct tb_xdp_properties {
@@ -604,18 +527,13 @@ struct tb_xdp_properties {
 };
 
 struct tb_xdp_properties_response {
-	union {
-		struct tb_xdp_error_response err;
-		struct {
-			struct tb_xdp_header hdr;
-			uuid_t src_uuid;
-			uuid_t dst_uuid;
-			u16 offset;
-			u16 data_length;
-			u32 generation;
-			u32 data[];
-		};
-	};
+	struct tb_xdp_header hdr;
+	uuid_t src_uuid;
+	uuid_t dst_uuid;
+	u16 offset;
+	u16 data_length;
+	u32 generation;
+	u32 data[0];
 };
 
 /*
@@ -634,10 +552,7 @@ struct tb_xdp_properties_changed {
 };
 
 struct tb_xdp_properties_changed_response {
-	union {
-		struct tb_xdp_error_response err;
-		struct tb_xdp_header hdr;
-	};
+	struct tb_xdp_header hdr;
 };
 
 enum tb_xdp_error {
@@ -646,6 +561,11 @@ enum tb_xdp_error {
 	ERROR_UNKNOWN_DOMAIN,
 	ERROR_NOT_SUPPORTED,
 	ERROR_NOT_READY,
+};
+
+struct tb_xdp_error_response {
+	struct tb_xdp_header hdr;
+	u32 error;
 };
 
 #endif

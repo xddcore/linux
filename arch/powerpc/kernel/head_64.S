@@ -41,11 +41,6 @@
 #include <asm/ppc-opcode.h>
 #include <asm/export.h>
 #include <asm/feature-fixups.h>
-#ifdef CONFIG_PPC_BOOK3S
-#include <asm/exception-64s.h>
-#else
-#include <asm/exception-64e.h>
-#endif
 
 /* The physical memory is laid out such that the secondary processor
  * spin code sits at 0x0000...0x00ff. On server, the vectors follow
@@ -111,7 +106,7 @@ __secondary_hold_acknowledge:
 #ifdef CONFIG_RELOCATABLE
 	/* This flag is set to 1 by a loader if the kernel should run
 	 * at the loaded address instead of the linked address.  This
-	 * is used by kexec-tools to keep the kdump kernel in the
+	 * is used by kexec-tools to keep the the kdump kernel in the
 	 * crash_kernel region.  The loader is responsible for
 	 * observing the alignment requirement.
 	 */
@@ -126,7 +121,7 @@ __secondary_hold_acknowledge:
 	. = 0x5c
 	.globl	__run_at_load
 __run_at_load:
-DEFINE_FIXED_SYMBOL(__run_at_load, first_256B)
+DEFINE_FIXED_SYMBOL(__run_at_load)
 	.long	RUN_AT_LOAD_DEFAULT
 #endif
 
@@ -143,7 +138,7 @@ DEFINE_FIXED_SYMBOL(__run_at_load, first_256B)
 	.globl	__secondary_hold
 __secondary_hold:
 	FIXUP_ENDIAN
-#ifndef CONFIG_PPC_BOOK3E_64
+#ifndef CONFIG_PPC_BOOK3E
 	mfmsr	r24
 	ori	r24,r24,MSR_RI
 	mtmsrd	r24			/* RI on */
@@ -156,20 +151,20 @@ __secondary_hold:
 	/* Tell the master cpu we're here */
 	/* Relocation is off & we are located at an address less */
 	/* than 0x100, so only need to grab low order offset.    */
-	std	r24,(ABS_ADDR(__secondary_hold_acknowledge, first_256B))(0)
+	std	r24,(ABS_ADDR(__secondary_hold_acknowledge))(0)
 	sync
 
 	li	r26,0
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	tovirt(r26,r26)
 #endif
 	/* All secondary cpus wait here until told to start. */
-100:	ld	r12,(ABS_ADDR(__secondary_hold_spinloop, first_256B))(r26)
+100:	ld	r12,(ABS_ADDR(__secondary_hold_spinloop))(r26)
 	cmpdi	0,r12,0
 	beq	100b
 
 #if defined(CONFIG_SMP) || defined(CONFIG_KEXEC_CORE)
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	tovirt(r12,r12)
 #endif
 	mtctr	r12
@@ -178,7 +173,7 @@ __secondary_hold:
 	 * it may be the case that other platforms have r4 right to
 	 * begin with, this gives us some safety in case it is not
 	 */
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	mr	r4,r25
 #else
 	li	r4,0
@@ -191,6 +186,12 @@ __secondary_hold:
 	EMIT_BUG_ENTRY 0b, __FILE__, __LINE__, 0
 #endif
 CLOSE_FIXED_SECTION(first_256B)
+
+/* This value is used to mark exception frames on the stack. */
+	.section ".toc","aw"
+exception_marker:
+	.tc	ID_72656773_68657265[TC],0x7265677368657265
+	.previous
 
 /*
  * On server, we include the exception vectors code here as it
@@ -205,9 +206,7 @@ OPEN_TEXT_SECTION(0x100)
 
 USE_TEXT_SECTION()
 
-#include "interrupt_64.S"
-
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 /*
  * The booting_thread_hwid holds the thread id we want to boot in cpu
  * hotplug case. It is set by cpu hotplug code, and is invalid by default.
@@ -315,7 +314,7 @@ _GLOBAL(fsl_secondary_thread_init)
 	bl	book3e_secondary_thread_init
 	b	generic_secondary_common_init
 
-#endif /* CONFIG_PPC_BOOK3E_64 */
+#endif /* CONFIG_PPC_BOOK3E */
 
 /*
  * On pSeries and most other platforms, secondary processors spin
@@ -338,7 +337,7 @@ _GLOBAL(generic_secondary_smp_init)
 	bl	relative_toc
 	tovirt(r2,r2)
 
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	/* Book3E initialization */
 	mr	r3,r24
 	mr	r4,r25
@@ -393,12 +392,8 @@ generic_secondary_common_init:
 #else
 	LOAD_REG_ADDR(r8, paca_ptrs)	/* Load paca_ptrs pointe	 */
 	ld	r8,0(r8)		/* Get base vaddr of array	 */
-#if (NR_CPUS == 1) || defined(CONFIG_FORCE_NR_CPUS)
-	LOAD_REG_IMMEDIATE(r7, NR_CPUS)
-#else
 	LOAD_REG_ADDR(r7, nr_cpu_ids)	/* Load nr_cpu_ids address       */
 	lwz	r7,0(r7)		/* also the max paca allocated 	 */
-#endif
 	li	r5,0			/* logical cpu id                */
 1:
 	sldi	r9,r5,3			/* get paca_ptrs[] index from cpu id */
@@ -414,7 +409,7 @@ generic_secondary_common_init:
 	b	kexec_wait		/* next kernel might do better	 */
 
 2:	SET_PACA(r13)
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	addi	r12,r13,PACA_EXTLB	/* and TLB exc frame in another  */
 	mtspr	SPRN_SPRG_TLB_EXFRAME,r12
 #endif
@@ -432,7 +427,7 @@ generic_secondary_common_init:
 	ld	r12,CPU_SPEC_RESTORE(r23)
 	cmpdi	0,r12,0
 	beq	3f
-#ifdef CONFIG_PPC64_ELF_ABI_V1
+#ifdef PPC64_ELF_ABI_v1
 	ld	r12,0(r12)
 #endif
 	mtctr	r12
@@ -491,9 +486,6 @@ __start_initialization_multiplatform:
 	/* Make sure we are running in 64 bits mode */
 	bl	enable_64b_mode
 
-	/* Zero r13 (paca) so early program check / mce don't use it */
-	li	r13,0
-
 	/* Get TOC pointer (current runtime address) */
 	bl	relative_toc
 
@@ -519,7 +511,7 @@ __start_initialization_multiplatform:
 	mr	r29,r9
 #endif
 
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	bl	start_initialization_book3e
 	b	__after_prom_start
 #else
@@ -540,7 +532,7 @@ __start_initialization_multiplatform:
 	/* Switch off MMU if not already off */
 	bl	__mmu_off
 	b	__after_prom_start
-#endif /* CONFIG_PPC_BOOK3E_64 */
+#endif /* CONFIG_PPC_BOOK3E */
 
 __REF
 __boot_from_prom:
@@ -587,11 +579,11 @@ __after_prom_start:
 	/* process relocations for the final address of the kernel */
 	lis	r25,PAGE_OFFSET@highest	/* compute virtual base of kernel */
 	sldi	r25,r25,32
-#if defined(CONFIG_PPC_BOOK3E_64)
+#if defined(CONFIG_PPC_BOOK3E)
 	tovirt(r26,r26)		/* on booke, we already run at PAGE_OFFSET */
 #endif
 	lwz	r7,(FIXED_SYMBOL_ABS_ADDR(__run_at_load))(r26)
-#if defined(CONFIG_PPC_BOOK3E_64)
+#if defined(CONFIG_PPC_BOOK3E)
 	tophys(r26,r26)
 #endif
 	cmplwi	cr0,r7,1	/* flagged to stay where we are ? */
@@ -599,7 +591,7 @@ __after_prom_start:
 	add	r25,r25,r26
 1:	mr	r3,r25
 	bl	relocate
-#if defined(CONFIG_PPC_BOOK3E_64)
+#if defined(CONFIG_PPC_BOOK3E)
 	/* IVPR needs to be set after relocation. */
 	bl	init_core_book3e
 #endif
@@ -613,11 +605,11 @@ __after_prom_start:
  * Note: This process overwrites the OF exception vectors.
  */
 	li	r3,0			/* target addr */
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	tovirt(r3,r3)		/* on booke, we already run at PAGE_OFFSET */
 #endif
 	mr.	r4,r26			/* In some cases the loader may  */
-#if defined(CONFIG_PPC_BOOK3E_64)
+#if defined(CONFIG_PPC_BOOK3E)
 	tovirt(r4,r4)
 #endif
 	beq	9f			/* have already put us at zero */
@@ -630,14 +622,14 @@ __after_prom_start:
  * variable __run_at_load, if it is set the kernel is treated as relocatable
  * kernel, otherwise it will be moved to PHYSICAL_START
  */
-#if defined(CONFIG_PPC_BOOK3E_64)
+#if defined(CONFIG_PPC_BOOK3E)
 	tovirt(r26,r26)		/* on booke, we already run at PAGE_OFFSET */
 #endif
 	lwz	r7,(FIXED_SYMBOL_ABS_ADDR(__run_at_load))(r26)
 	cmplwi	cr0,r7,1
 	bne	3f
 
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	LOAD_REG_ADDR(r5, __end_interrupts)
 	LOAD_REG_ADDR(r11, _stext)
 	sub	r5,r5,r11
@@ -649,15 +641,15 @@ __after_prom_start:
 3:
 #endif
 	/* # bytes of memory to copy */
-	lis	r5,(ABS_ADDR(copy_to_here, text))@ha
-	addi	r5,r5,(ABS_ADDR(copy_to_here, text))@l
+	lis	r5,(ABS_ADDR(copy_to_here))@ha
+	addi	r5,r5,(ABS_ADDR(copy_to_here))@l
 
 	bl	copy_and_flush		/* copy the first n bytes	 */
 					/* this includes the code being	 */
 					/* executed here.		 */
 	/* Jump to the copy of this code that we just made */
-	addis	r8,r3,(ABS_ADDR(4f, text))@ha
-	addi	r12,r8,(ABS_ADDR(4f, text))@l
+	addis	r8,r3,(ABS_ADDR(4f))@ha
+	addi	r12,r8,(ABS_ADDR(4f))@l
 	mtctr	r12
 	bctr
 
@@ -669,8 +661,8 @@ p_end: .8byte _end - copy_to_here
 	 * Now copy the rest of the kernel up to _end, add
 	 * _end - copy_to_here to the copy limit and run again.
 	 */
-	addis   r8,r26,(ABS_ADDR(p_end, text))@ha
-	ld      r8,(ABS_ADDR(p_end, text))@l(r8)
+	addis   r8,r26,(ABS_ADDR(p_end))@ha
+	ld      r8,(ABS_ADDR(p_end))@l(r8)
 	add	r5,r5,r8
 5:	bl	copy_and_flush		/* copy the rest */
 
@@ -711,8 +703,6 @@ _GLOBAL(copy_and_flush)
 	addi	r6,r6,8
 	isync
 	blr
-
-_ASM_NOKPROBE_SYMBOL(copy_and_flush); /* Called in real mode */
 
 .align 8
 copy_to_here:
@@ -839,7 +829,7 @@ __secondary_start:
 
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	RFI_TO_KERNEL
+	RFI
 	b	.	/* prevent speculative execution */
 
 /* 
@@ -848,7 +838,7 @@ __secondary_start:
  * before going into C code.
  */
 start_secondary_prolog:
-	LOAD_PACA_TOC()
+	ld	r2,PACATOC(r13)
 	li	r3,0
 	std	r3,0(r1)		/* Zero the stack frame pointer	*/
 	bl	start_secondary
@@ -871,11 +861,12 @@ _GLOBAL(start_secondary_resume)
  */
 enable_64b_mode:
 	mfmsr	r11			/* grab the current MSR */
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	oris	r11,r11,0x8000		/* CM bit set, we'll set ICM later */
 	mtmsr	r11
-#else /* CONFIG_PPC_BOOK3E_64 */
-	LOAD_REG_IMMEDIATE(r12, MSR_64BIT)
+#else /* CONFIG_PPC_BOOK3E */
+	li	r12,(MSR_64BIT | MSR_ISF)@highest
+	sldi	r12,r12,48
 	or	r11,r11,r12
 	mtmsrd	r11
 	isync
@@ -904,7 +895,7 @@ _GLOBAL(relative_toc)
 	blr
 
 .balign 8
-p_toc:	.8byte	.TOC. - 0b
+p_toc:	.8byte	__toc_start + 0x8000 - 0b
 
 /*
  * This is where the main kernel code starts.
@@ -940,7 +931,7 @@ start_here_multiplatform:
 	std	r29,8(r11);
 #endif
 
-#ifndef CONFIG_PPC_BOOK3E_64
+#ifndef CONFIG_PPC_BOOK3E
 	mfmsr	r6
 	ori	r6,r6,MSR_RI
 	mtmsrd	r6			/* RI on */
@@ -965,9 +956,6 @@ start_here_multiplatform:
 	 * and SLB setup before we turn on relocation.
 	 */
 
-#ifdef CONFIG_KASAN
-	bl	kasan_early_init
-#endif
 	/* Restore parameters passed from prom_init/kexec */
 	mr	r3,r31
 	LOAD_REG_ADDR(r12, DOTSYM(early_setup))
@@ -978,7 +966,7 @@ start_here_multiplatform:
 	ld	r4,PACAKMSR(r13)
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	RFI_TO_KERNEL
+	RFI
 	b	.	/* prevent speculative execution */
 
 	/* This is where all platforms converge execution */
@@ -988,7 +976,7 @@ start_here_common:
 	std	r1,PACAKSAVE(r13)
 
 	/* Load the TOC (virtual address) */
-	LOAD_PACA_TOC()
+	ld	r2,PACATOC(r13)
 
 	/* Mark interrupts soft and hard disabled (they might be enabled
 	 * in the PACA when doing hotplug)
@@ -1005,3 +993,23 @@ start_here_common:
 0:	trap
 	EMIT_BUG_ENTRY 0b, __FILE__, __LINE__, 0
 	.previous
+
+/*
+ * We put a few things here that have to be page-aligned.
+ * This stuff goes at the beginning of the bss, which is page-aligned.
+ */
+	.section ".bss"
+/*
+ * pgd dir should be aligned to PGD_TABLE_SIZE which is 64K.
+ * We will need to find a better way to fix this
+ */
+	.align	16
+
+	.globl	swapper_pg_dir
+swapper_pg_dir:
+	.space	PGD_TABLE_SIZE
+
+	.globl	empty_zero_page
+empty_zero_page:
+	.space	PAGE_SIZE
+EXPORT_SYMBOL(empty_zero_page)

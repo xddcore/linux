@@ -532,11 +532,12 @@ static int da903x_probe(struct i2c_client *client,
 	return da903x_add_subdevs(chip, pdata);
 }
 
-static void da903x_remove(struct i2c_client *client)
+static int da903x_remove(struct i2c_client *client)
 {
 	struct da903x_chip *chip = i2c_get_clientdata(client);
 
 	da903x_remove_subdevs(chip);
+	return 0;
 }
 
 static struct i2c_driver da903x_driver = {

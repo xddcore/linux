@@ -19,7 +19,6 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/units.h>
 #include <linux/usb.h>
 #include <linux/workqueue.h>
 
@@ -454,7 +453,7 @@ static const struct can_bittiming_const kvaser_usb_leaf_m32c_bittiming_const = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_usbcan_dev_cfg = {
 	.clock = {
-		.freq = 8 * MEGA /* Hz */,
+		.freq = 8000000,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_leaf_m16c_bittiming_const,
@@ -462,7 +461,7 @@ static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_usbcan_dev_cfg = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_m32c_dev_cfg = {
 	.clock = {
-		.freq = 16 * MEGA /* Hz */,
+		.freq = 16000000,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_leaf_m32c_bittiming_const,
@@ -470,7 +469,7 @@ static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_m32c_dev_cfg = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_16mhz = {
 	.clock = {
-		.freq = 16 * MEGA /* Hz */,
+		.freq = 16000000,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_flexc_bittiming_const,
@@ -478,7 +477,7 @@ static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_16mhz = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_24mhz = {
 	.clock = {
-		.freq = 24 * MEGA /* Hz */,
+		.freq = 24000000,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_flexc_bittiming_const,
@@ -486,7 +485,7 @@ static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_24mhz = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_32mhz = {
 	.clock = {
-		.freq = 32 * MEGA /* Hz */,
+		.freq = 32000000,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_flexc_bittiming_const,
@@ -531,13 +530,15 @@ static int kvaser_usb_leaf_verify_size(const struct kvaser_usb *dev,
 
 static void *
 kvaser_usb_leaf_frame_to_cmd(const struct kvaser_usb_net_priv *priv,
-			     const struct sk_buff *skb, int *cmd_len,
-			     u16 transid)
+			     const struct sk_buff *skb, int *frame_len,
+			     int *cmd_len, u16 transid)
 {
 	struct kvaser_usb *dev = priv->dev;
 	struct kvaser_cmd *cmd;
 	u8 *cmd_tx_can_flags = NULL;		/* GCC */
 	struct can_frame *cf = (struct can_frame *)skb->data;
+
+	*frame_len = cf->can_dlc;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (cmd) {
@@ -570,8 +571,8 @@ kvaser_usb_leaf_frame_to_cmd(const struct kvaser_usb_net_priv *priv,
 			cmd->u.tx_can.data[1] = cf->can_id & 0x3f;
 		}
 
-		cmd->u.tx_can.data[5] = cf->len;
-		memcpy(&cmd->u.tx_can.data[6], cf->data, cf->len);
+		cmd->u.tx_can.data[5] = cf->can_dlc;
+		memcpy(&cmd->u.tx_can.data[6], cf->data, cf->can_dlc);
 
 		if (cf->can_id & CAN_RTR_FLAG)
 			*cmd_tx_can_flags |= MSG_FLAG_REMOTE_FRAME;
@@ -905,6 +906,8 @@ static void kvaser_usb_leaf_tx_acknowledge(const struct kvaser_usb *dev,
 		if (skb) {
 			cf->can_id |= CAN_ERR_RESTARTED;
 
+			stats->rx_packets++;
+			stats->rx_bytes += cf->can_dlc;
 			netif_rx(skb);
 		} else {
 			netdev_err(priv->netdev,
@@ -917,11 +920,12 @@ static void kvaser_usb_leaf_tx_acknowledge(const struct kvaser_usb *dev,
 		priv->can.state = CAN_STATE_ERROR_ACTIVE;
 	}
 
+	stats->tx_packets++;
+	stats->tx_bytes += context->dlc;
+
 	spin_lock_irqsave(&priv->tx_contexts_lock, flags);
 
-	stats->tx_packets++;
-	stats->tx_bytes += can_get_echo_skb(priv->netdev,
-					    context->echo_index, NULL);
+	can_get_echo_skb(priv->netdev, context->echo_index);
 	context->echo_index = dev->max_tx_urbs;
 	--priv->active_tx_contexts;
 	netif_wake_queue(priv->netdev);
@@ -1027,7 +1031,7 @@ static void kvaser_usb_leaf_rx_error(const struct kvaser_usb *dev,
 {
 	struct can_frame *cf;
 	struct can_frame tmp_cf = { .can_id = CAN_ERR_FLAG,
-				    .len = CAN_ERR_DLC };
+				    .can_dlc = CAN_ERR_DLC };
 	struct sk_buff *skb;
 	struct net_device_stats *stats;
 	struct kvaser_usb_net_priv *priv;
@@ -1122,11 +1126,12 @@ static void kvaser_usb_leaf_rx_error(const struct kvaser_usb *dev,
 	}
 
 	if (new_state != CAN_STATE_BUS_OFF) {
-		cf->can_id |= CAN_ERR_CNT;
 		cf->data[6] = es->txerr;
 		cf->data[7] = es->rxerr;
 	}
 
+	stats->rx_packets++;
+	stats->rx_bytes += cf->can_dlc;
 	netif_rx(skb);
 }
 
@@ -1326,13 +1331,13 @@ static void kvaser_usb_leaf_rx_can_msg(const struct kvaser_usb *dev,
 		else
 			cf->can_id &= CAN_SFF_MASK;
 
-		cf->len = can_cc_dlc2len(cmd->u.leaf.log_message.dlc);
+		cf->can_dlc = get_can_dlc(cmd->u.leaf.log_message.dlc);
 
 		if (cmd->u.leaf.log_message.flags & MSG_FLAG_REMOTE_FRAME)
 			cf->can_id |= CAN_RTR_FLAG;
 		else
 			memcpy(cf->data, &cmd->u.leaf.log_message.data,
-			       cf->len);
+			       cf->can_dlc);
 	} else {
 		cf->can_id = ((rx_data[0] & 0x1f) << 6) | (rx_data[1] & 0x3f);
 
@@ -1344,17 +1349,16 @@ static void kvaser_usb_leaf_rx_can_msg(const struct kvaser_usb *dev,
 			cf->can_id |= CAN_EFF_FLAG;
 		}
 
-		cf->len = can_cc_dlc2len(rx_data[5]);
+		cf->can_dlc = get_can_dlc(rx_data[5]);
 
 		if (cmd->u.rx_can_header.flag & MSG_FLAG_REMOTE_FRAME)
 			cf->can_id |= CAN_RTR_FLAG;
 		else
-			memcpy(cf->data, &rx_data[6], cf->len);
+			memcpy(cf->data, &rx_data[6], cf->can_dlc);
 	}
 
 	stats->rx_packets++;
-	if (!(cf->can_id & CAN_RTR_FLAG))
-		stats->rx_bytes += cf->len;
+	stats->rx_bytes += cf->can_dlc;
 	netif_rx(skb);
 }
 

@@ -5,7 +5,6 @@
 #include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/of_iommu.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/dma-direct.h> /* for bus_dma_region */
 #include <linux/dma-map-ops.h>
 #include <linux/init.h>
@@ -28,11 +27,32 @@
 const struct of_device_id *of_match_device(const struct of_device_id *matches,
 					   const struct device *dev)
 {
-	if (!matches || !dev->of_node || dev->of_node_reused)
+	if ((!matches) || (!dev->of_node))
 		return NULL;
 	return of_match_node(matches, dev->of_node);
 }
 EXPORT_SYMBOL(of_match_device);
+
+struct platform_device *of_dev_get(struct platform_device *dev)
+{
+	struct device *tmp;
+
+	if (!dev)
+		return NULL;
+	tmp = get_device(&dev->dev);
+	if (tmp)
+		return to_platform_device(tmp);
+	else
+		return NULL;
+}
+EXPORT_SYMBOL(of_dev_get);
+
+void of_dev_put(struct platform_device *dev)
+{
+	if (dev)
+		put_device(&dev->dev);
+}
+EXPORT_SYMBOL(of_dev_put);
 
 int of_device_add(struct platform_device *ofdev)
 {
@@ -53,51 +73,8 @@ int of_device_add(struct platform_device *ofdev)
 	return device_add(&ofdev->dev);
 }
 
-static void
-of_dma_set_restricted_buffer(struct device *dev, struct device_node *np)
-{
-	struct device_node *node, *of_node = dev->of_node;
-	int count, i;
-
-	if (!IS_ENABLED(CONFIG_DMA_RESTRICTED_POOL))
-		return;
-
-	count = of_property_count_elems_of_size(of_node, "memory-region",
-						sizeof(u32));
-	/*
-	 * If dev->of_node doesn't exist or doesn't contain memory-region, try
-	 * the OF node having DMA configuration.
-	 */
-	if (count <= 0) {
-		of_node = np;
-		count = of_property_count_elems_of_size(
-			of_node, "memory-region", sizeof(u32));
-	}
-
-	for (i = 0; i < count; i++) {
-		node = of_parse_phandle(of_node, "memory-region", i);
-		/*
-		 * There might be multiple memory regions, but only one
-		 * restricted-dma-pool region is allowed.
-		 */
-		if (of_device_is_compatible(node, "restricted-dma-pool") &&
-		    of_device_is_available(node)) {
-			of_node_put(node);
-			break;
-		}
-		of_node_put(node);
-	}
-
-	/*
-	 * Attempt to initialize a restricted-dma-pool region if one was found.
-	 * Note that count can hold a negative error code.
-	 */
-	if (i < count && of_reserved_mem_device_init_by_idx(dev, of_node, i))
-		dev_warn(dev, "failed to initialise \"restricted-dma-pool\" memory node\n");
-}
-
 /**
- * of_dma_configure_id - Setup DMA configuration
+ * of_dma_configure - Setup DMA configuration
  * @dev:	Device to apply DMA configuration
  * @np:		Pointer to OF node having DMA configuration
  * @force_dma:  Whether device is to be set up by of_dma_configure() even if
@@ -116,19 +93,12 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 {
 	const struct iommu_ops *iommu;
 	const struct bus_dma_region *map = NULL;
-	struct device_node *bus_np;
 	u64 dma_start = 0;
 	u64 mask, end, size = 0;
 	bool coherent;
 	int ret;
 
-	if (np == dev->of_node)
-		bus_np = __of_get_dma_parent(np);
-	else
-		bus_np = of_node_get(np);
-
-	ret = of_dma_get_range(bus_np, &map);
-	of_node_put(bus_np);
+	ret = of_dma_get_range(np, &map);
 	if (ret < 0) {
 		/*
 		 * For legacy reasons, we have to assume some devices need
@@ -215,9 +185,6 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 		iommu ? " " : " not ");
 
 	arch_setup_dma_ops(dev, dma_start, size, iommu, coherent);
-
-	if (!iommu)
-		of_dma_set_restricted_buffer(dev, np);
 
 	return 0;
 }
@@ -315,9 +282,6 @@ EXPORT_SYMBOL_GPL(of_device_request_module);
 
 /**
  * of_device_modalias - Fill buffer with newline terminated modalias string
- * @dev:	Calling device
- * @str:	Modalias string
- * @len:	Size of @str
  */
 ssize_t of_device_modalias(struct device *dev, char *str, ssize_t len)
 {
@@ -335,8 +299,6 @@ EXPORT_SYMBOL_GPL(of_device_modalias);
 
 /**
  * of_device_uevent - Display OF related uevent information
- * @dev:	Device to apply DMA configuration
- * @env:	Kernel object's userspace event reference
  */
 void of_device_uevent(struct device *dev, struct kobj_uevent_env *env)
 {

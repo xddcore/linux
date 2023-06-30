@@ -49,7 +49,6 @@
 ########################################################################
 
 #include <linux/linkage.h>
-#include <linux/cfi_types.h>
 
 ## assume buffers not aligned
 #define	VMOVDQ vmovdqu
@@ -118,13 +117,15 @@ _XMM_SAVE_SIZE	= 0
 _INP_END_SIZE	= 8
 _INP_SIZE	= 8
 _CTX_SIZE	= 8
+_RSP_SIZE	= 8
 
 _XFER		= 0
 _XMM_SAVE	= _XFER     + _XFER_SIZE
 _INP_END	= _XMM_SAVE + _XMM_SAVE_SIZE
 _INP		= _INP_END  + _INP_END_SIZE
 _CTX		= _INP      + _INP_SIZE
-STACK_SIZE	= _CTX      + _CTX_SIZE
+_RSP		= _CTX      + _CTX_SIZE
+STACK_SIZE	= _RSP      + _RSP_SIZE
 
 # rotate_Xs
 # Rotate values of symbols X0...X3
@@ -524,7 +525,7 @@ STACK_SIZE	= _CTX      + _CTX_SIZE
 ## arg 3 : Num blocks
 ########################################################################
 .text
-SYM_TYPED_FUNC_START(sha256_transform_rorx)
+SYM_FUNC_START(sha256_transform_rorx)
 .align 32
 	pushq	%rbx
 	pushq	%r12
@@ -532,11 +533,11 @@ SYM_TYPED_FUNC_START(sha256_transform_rorx)
 	pushq	%r14
 	pushq	%r15
 
-	push	%rbp
-	mov	%rsp, %rbp
-
+	mov	%rsp, %rax
 	subq	$STACK_SIZE, %rsp
 	and	$-32, %rsp	# align rsp to 32 byte boundary
+	mov	%rax, _RSP(%rsp)
+
 
 	shl	$6, NUM_BLKS	# convert to bytes
 	jz	done_hash
@@ -703,8 +704,7 @@ only_one_block:
 
 done_hash:
 
-	mov	%rbp, %rsp
-	pop	%rbp
+	mov	_RSP(%rsp), %rsp
 
 	popq	%r15
 	popq	%r14

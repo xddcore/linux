@@ -61,7 +61,6 @@ static void scsi_host_cls_release(struct device *dev)
 static struct class shost_class = {
 	.name		= "scsi_host",
 	.dev_release	= scsi_host_cls_release,
-	.dev_groups	= scsi_shost_groups,
 };
 
 /**
@@ -183,15 +182,6 @@ void scsi_remove_host(struct Scsi_Host *shost)
 	scsi_proc_host_rm(shost);
 	scsi_proc_hostdir_rm(shost->hostt);
 
-	/*
-	 * New SCSI devices cannot be attached anymore because of the SCSI host
-	 * state so drop the tag set refcnt. Wait until the tag set refcnt drops
-	 * to zero because .exit_cmd_priv implementations may need the host
-	 * pointer.
-	 */
-	kref_put(&shost->tagset_refcnt, scsi_mq_free_tags);
-	wait_for_completion(&shost->tagset_freed);
-
 	spin_lock_irqsave(shost->host_lock, flags);
 	if (scsi_host_set_state(shost, SHOST_DEL))
 		BUG_ON(scsi_host_set_state(shost, SHOST_DEL_RECOVERY));
@@ -239,24 +229,16 @@ int scsi_add_host_with_dma(struct Scsi_Host *shost, struct device *dev,
 	if (error)
 		goto fail;
 
+	error = scsi_mq_setup_tags(shost);
+	if (error)
+		goto fail;
+
 	if (!shost->shost_gendev.parent)
 		shost->shost_gendev.parent = dev ? dev : &platform_bus;
 	if (!dma_dev)
 		dma_dev = shost->shost_gendev.parent;
 
 	shost->dma_dev = dma_dev;
-
-	if (dma_dev->dma_mask) {
-		shost->max_sectors = min_t(unsigned int, shost->max_sectors,
-				dma_max_mapping_size(dma_dev) >> SECTOR_SHIFT);
-	}
-
-	error = scsi_mq_setup_tags(shost);
-	if (error)
-		goto fail;
-
-	kref_init(&shost->tagset_refcnt);
-	init_completion(&shost->tagset_freed);
 
 	/*
 	 * Increase usage count temporarily here so that calling
@@ -330,7 +312,6 @@ int scsi_add_host_with_dma(struct Scsi_Host *shost, struct device *dev,
 	pm_runtime_disable(&shost->shost_gendev);
 	pm_runtime_set_suspended(&shost->shost_gendev);
 	pm_runtime_put_noidle(&shost->shost_gendev);
-	kref_put(&shost->tagset_refcnt, scsi_mq_free_tags);
  fail:
 	return error;
 }
@@ -362,9 +343,12 @@ static void scsi_host_dev_release(struct device *dev)
 		kfree(dev_name(&shost->shost_dev));
 	}
 
+	if (shost->tag_set.tags)
+		scsi_mq_destroy_tags(shost);
+
 	kfree(shost->shost_data);
 
-	ida_free(&host_index_ida, shost->host_no);
+	ida_simple_remove(&host_index_ida, shost->host_no);
 
 	if (shost->shost_state != SHOST_CREATED)
 		put_device(parent);
@@ -392,9 +376,13 @@ static struct device_type scsi_host_type = {
 struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 {
 	struct Scsi_Host *shost;
+	gfp_t gfp_mask = GFP_KERNEL;
 	int index;
 
-	shost = kzalloc(sizeof(struct Scsi_Host) + privsize, GFP_KERNEL);
+	if (sht->unchecked_isa_dma && privsize)
+		gfp_mask |= __GFP_DMA;
+
+	shost = kzalloc(sizeof(struct Scsi_Host) + privsize, gfp_mask);
 	if (!shost)
 		return NULL;
 
@@ -403,13 +391,12 @@ struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 	shost->shost_state = SHOST_CREATED;
 	INIT_LIST_HEAD(&shost->__devices);
 	INIT_LIST_HEAD(&shost->__targets);
-	INIT_LIST_HEAD(&shost->eh_abort_list);
 	INIT_LIST_HEAD(&shost->eh_cmd_q);
 	INIT_LIST_HEAD(&shost->starved_list);
 	init_waitqueue_head(&shost->host_wait);
 	mutex_init(&shost->scan_mutex);
 
-	index = ida_alloc(&host_index_ida, GFP_KERNEL);
+	index = ida_simple_get(&host_index_ida, 0, 0, GFP_KERNEL);
 	if (index < 0) {
 		kfree(shost);
 		return NULL;
@@ -439,6 +426,7 @@ struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 	shost->sg_tablesize = sht->sg_tablesize;
 	shost->sg_prot_tablesize = sht->sg_prot_tablesize;
 	shost->cmd_per_lun = sht->cmd_per_lun;
+	shost->unchecked_isa_dma = sht->unchecked_isa_dma;
 	shost->no_write_same = sht->no_write_same;
 	shost->host_tagset = sht->host_tagset;
 
@@ -492,13 +480,12 @@ struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 	dev_set_name(&shost->shost_gendev, "host%d", shost->host_no);
 	shost->shost_gendev.bus = &scsi_bus_type;
 	shost->shost_gendev.type = &scsi_host_type;
-	scsi_enable_async_suspend(&shost->shost_gendev);
 
 	device_initialize(&shost->shost_dev);
 	shost->shost_dev.parent = &shost->shost_gendev;
 	shost->shost_dev.class = &shost_class;
 	dev_set_name(&shost->shost_dev, "host%d", shost->host_no);
-	shost->shost_dev.groups = sht->shost_groups;
+	shost->shost_dev.groups = scsi_sysfs_shost_attr_groups;
 
 	shost->ehandler = kthread_run(scsi_error_handler, shost,
 			"scsi_eh_%d", shost->host_no);
@@ -580,7 +567,8 @@ struct Scsi_Host *scsi_host_get(struct Scsi_Host *shost)
 }
 EXPORT_SYMBOL(scsi_host_get);
 
-static bool scsi_host_check_in_flight(struct request *rq, void *data)
+static bool scsi_host_check_in_flight(struct request *rq, void *data,
+				      bool reserved)
 {
 	int *count = data;
 	struct scsi_cmnd *cmd = blk_mq_rq_to_pdu(rq);
@@ -675,15 +663,14 @@ void scsi_flush_work(struct Scsi_Host *shost)
 }
 EXPORT_SYMBOL_GPL(scsi_flush_work);
 
-static bool complete_all_cmds_iter(struct request *rq, void *data)
+static bool complete_all_cmds_iter(struct request *rq, void *data, bool rsvd)
 {
 	struct scsi_cmnd *scmd = blk_mq_rq_to_pdu(rq);
-	enum scsi_host_status status = *(enum scsi_host_status *)data;
+	int status = *(int *)data;
 
 	scsi_dma_unmap(scmd);
-	scmd->result = 0;
-	set_host_byte(scmd, status);
-	scsi_done(scmd);
+	scmd->result = status << 16;
+	scmd->scsi_done(scmd);
 	return true;
 }
 
@@ -697,8 +684,7 @@ static bool complete_all_cmds_iter(struct request *rq, void *data)
  * caller to ensure that concurrent I/O submission and/or
  * completion is stopped when calling this function.
  */
-void scsi_host_complete_all_commands(struct Scsi_Host *shost,
-				     enum scsi_host_status status)
+void scsi_host_complete_all_commands(struct Scsi_Host *shost, int status)
 {
 	blk_mq_tagset_busy_iter(&shost->tag_set, complete_all_cmds_iter,
 				&status);
@@ -706,16 +692,17 @@ void scsi_host_complete_all_commands(struct Scsi_Host *shost,
 EXPORT_SYMBOL_GPL(scsi_host_complete_all_commands);
 
 struct scsi_host_busy_iter_data {
-	bool (*fn)(struct scsi_cmnd *, void *);
+	bool (*fn)(struct scsi_cmnd *, void *, bool);
 	void *priv;
 };
 
-static bool __scsi_host_busy_iter_fn(struct request *req, void *priv)
+static bool __scsi_host_busy_iter_fn(struct request *req, void *priv,
+				   bool reserved)
 {
 	struct scsi_host_busy_iter_data *iter_data = priv;
 	struct scsi_cmnd *sc = blk_mq_rq_to_pdu(req);
 
-	return iter_data->fn(sc, iter_data->priv);
+	return iter_data->fn(sc, iter_data->priv, reserved);
 }
 
 /**
@@ -728,7 +715,7 @@ static bool __scsi_host_busy_iter_fn(struct request *req, void *priv)
  * ithas to be provided by the caller
  **/
 void scsi_host_busy_iter(struct Scsi_Host *shost,
-			 bool (*fn)(struct scsi_cmnd *, void *),
+			 bool (*fn)(struct scsi_cmnd *, void *, bool),
 			 void *priv)
 {
 	struct scsi_host_busy_iter_data iter_data = {

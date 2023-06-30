@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
+/**
  * Sensortek STK8BA50 3-Axis Accelerometer
  *
  * Copyright (c) 2015, Intel Corporation.
@@ -227,8 +227,7 @@ static int stk8ba50_read_raw(struct iio_dev *indio_dev,
 			mutex_unlock(&data->lock);
 			return -EINVAL;
 		}
-		*val = sign_extend32(ret >> chan->scan_type.shift,
-				     chan->scan_type.realbits - 1);
+		*val = sign_extend32(ret >> STK8BA50_DATA_SHIFT, 9);
 		stk8ba50_set_power(data, STK8BA50_MODE_SUSPEND);
 		mutex_unlock(&data->lock);
 		return IIO_VAL_INT;
@@ -448,12 +447,13 @@ static int stk8ba50_probe(struct i2c_client *client,
 		data->dready_trig = devm_iio_trigger_alloc(&client->dev,
 							   "%s-dev%d",
 							   indio_dev->name,
-							   iio_device_id(indio_dev));
+							   indio_dev->id);
 		if (!data->dready_trig) {
 			ret = -ENOMEM;
 			goto err_power_off;
 		}
 
+		data->dready_trig->dev.parent = &client->dev;
 		data->dready_trig->ops = &stk8ba50_trigger_ops;
 		iio_trigger_set_drvdata(data->dready_trig, indio_dev);
 		ret = iio_trigger_register(data->dready_trig);
@@ -490,7 +490,7 @@ err_power_off:
 	return ret;
 }
 
-static void stk8ba50_remove(struct i2c_client *client)
+static int stk8ba50_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct stk8ba50_data *data = iio_priv(indio_dev);
@@ -501,9 +501,10 @@ static void stk8ba50_remove(struct i2c_client *client)
 	if (data->dready_trig)
 		iio_trigger_unregister(data->dready_trig);
 
-	stk8ba50_set_power(data, STK8BA50_MODE_SUSPEND);
+	return stk8ba50_set_power(data, STK8BA50_MODE_SUSPEND);
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int stk8ba50_suspend(struct device *dev)
 {
 	struct stk8ba50_data *data;
@@ -522,8 +523,12 @@ static int stk8ba50_resume(struct device *dev)
 	return stk8ba50_set_power(data, STK8BA50_MODE_NORMAL);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(stk8ba50_pm_ops, stk8ba50_suspend,
-				stk8ba50_resume);
+static SIMPLE_DEV_PM_OPS(stk8ba50_pm_ops, stk8ba50_suspend, stk8ba50_resume);
+
+#define STK8BA50_PM_OPS (&stk8ba50_pm_ops)
+#else
+#define STK8BA50_PM_OPS NULL
+#endif
 
 static const struct i2c_device_id stk8ba50_i2c_id[] = {
 	{"stk8ba50", 0},
@@ -541,7 +546,7 @@ MODULE_DEVICE_TABLE(acpi, stk8ba50_acpi_id);
 static struct i2c_driver stk8ba50_driver = {
 	.driver = {
 		.name = "stk8ba50",
-		.pm = pm_sleep_ptr(&stk8ba50_pm_ops),
+		.pm = STK8BA50_PM_OPS,
 		.acpi_match_table = ACPI_PTR(stk8ba50_acpi_id),
 	},
 	.probe =            stk8ba50_probe,

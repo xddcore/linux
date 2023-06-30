@@ -427,9 +427,9 @@ out:
 	rtnl_unlock();
 }
 
-static void arcnet_reply_tasklet(struct tasklet_struct *t)
+static void arcnet_reply_tasklet(unsigned long data)
 {
-	struct arcnet_local *lp = from_tasklet(lp, t, reply_tasklet);
+	struct arcnet_local *lp = (struct arcnet_local *)data;
 
 	struct sk_buff *ackskb, *skb;
 	struct sock_exterr_skb *serr;
@@ -530,7 +530,8 @@ int arcnet_open(struct net_device *dev)
 		arc_cont(D_PROTO, "\n");
 	}
 
-	tasklet_setup(&lp->reply_tasklet, arcnet_reply_tasklet);
+	tasklet_init(&lp->reply_tasklet, arcnet_reply_tasklet,
+		     (unsigned long)lp);
 
 	arc_printk(D_INIT, dev, "arcnet_open: resetting card.\n");
 

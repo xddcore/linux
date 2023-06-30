@@ -11,7 +11,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
@@ -494,16 +493,22 @@ static int imx7d_adc_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return dev_err_probe(dev, irq, "Failed getting irq\n");
+		return irq;
 
 	info->clk = devm_clk_get(dev, "adc");
-	if (IS_ERR(info->clk))
-		return dev_err_probe(dev, PTR_ERR(info->clk), "Failed getting clock\n");
+	if (IS_ERR(info->clk)) {
+		ret = PTR_ERR(info->clk);
+		dev_err(dev, "Failed getting clock, err = %d\n", ret);
+		return ret;
+	}
 
 	info->vref = devm_regulator_get(dev, "vref");
-	if (IS_ERR(info->vref))
-		return dev_err_probe(dev, PTR_ERR(info->vref),
-				     "Failed getting reference voltage\n");
+	if (IS_ERR(info->vref)) {
+		ret = PTR_ERR(info->vref);
+		dev_err(dev,
+			"Failed getting reference voltage, err = %d\n", ret);
+		return ret;
+	}
 
 	platform_set_drvdata(pdev, indio_dev);
 
@@ -523,11 +528,12 @@ static int imx7d_adc_probe(struct platform_device *pdev)
 
 	imx7d_adc_feature_config(info);
 
-	ret = imx7d_adc_enable(dev);
+	ret = imx7d_adc_enable(&indio_dev->dev);
 	if (ret)
 		return ret;
 
-	ret = devm_add_action_or_reset(dev, __imx7d_adc_disable, dev);
+	ret = devm_add_action_or_reset(dev, __imx7d_adc_disable,
+				       &indio_dev->dev);
 	if (ret)
 		return ret;
 
@@ -540,15 +546,14 @@ static int imx7d_adc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(imx7d_adc_pm_ops, imx7d_adc_disable,
-				imx7d_adc_enable);
+static SIMPLE_DEV_PM_OPS(imx7d_adc_pm_ops, imx7d_adc_disable, imx7d_adc_enable);
 
 static struct platform_driver imx7d_adc_driver = {
 	.probe		= imx7d_adc_probe,
 	.driver		= {
 		.name	= "imx7d_adc",
 		.of_match_table = imx7d_adc_match,
-		.pm	= pm_sleep_ptr(&imx7d_adc_pm_ops),
+		.pm	= &imx7d_adc_pm_ops,
 	},
 };
 

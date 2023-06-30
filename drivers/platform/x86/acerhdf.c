@@ -84,6 +84,8 @@ static struct platform_device *acerhdf_dev;
 
 module_param(kernelmode, uint, 0);
 MODULE_PARM_DESC(kernelmode, "Kernel mode fan control on / off");
+module_param(interval, uint, 0600);
+MODULE_PARM_DESC(interval, "Polling interval of temperature check");
 module_param(fanon, uint, 0600);
 MODULE_PARM_DESC(fanon, "Turn the fan on above this temperature");
 module_param(fanoff, uint, 0600);
@@ -334,11 +336,7 @@ static void acerhdf_check_param(struct thermal_zone_device *thermal)
 		}
 		if (verbose)
 			pr_notice("interval changed to: %d\n", interval);
-
-		if (thermal)
-			thermal->polling_delay_jiffies =
-				round_jiffies(msecs_to_jiffies(interval * 1000));
-
+		thermal->polling_delay = interval*1000;
 		prev_interval = interval;
 	}
 }
@@ -352,6 +350,8 @@ static void acerhdf_check_param(struct thermal_zone_device *thermal)
 static int acerhdf_get_ec_temp(struct thermal_zone_device *thermal, int *t)
 {
 	int temp, err = 0;
+
+	acerhdf_check_param(thermal);
 
 	err = acerhdf_get_temp(&temp);
 	if (err)
@@ -584,6 +584,21 @@ static struct platform_driver acerhdf_driver = {
 	.remove = acerhdf_remove,
 };
 
+/* checks if str begins with start */
+static int str_starts_with(const char *str, const char *start)
+{
+	unsigned long str_len = 0, start_len = 0;
+
+	str_len = strlen(str);
+	start_len = strlen(start);
+
+	if (str_len >= start_len &&
+			!strncmp(str, start, start_len))
+		return 1;
+
+	return 0;
+}
+
 /* check hardware */
 static int __init acerhdf_check_hardware(void)
 {
@@ -636,9 +651,9 @@ static int __init acerhdf_check_hardware(void)
 		 * check if actual hardware BIOS vendor, product and version
 		 * IDs start with the strings of BIOS table entry
 		 */
-		if (strstarts(vendor, bt->vendor) &&
-		    strstarts(product, bt->product) &&
-		    strstarts(version, bt->version)) {
+		if (str_starts_with(vendor, bt->vendor) &&
+				str_starts_with(product, bt->product) &&
+				str_starts_with(version, bt->version)) {
 			found = 1;
 			break;
 		}
@@ -676,7 +691,7 @@ static int __init acerhdf_register_platform(void)
 	if (err)
 		return err;
 
-	acerhdf_dev = platform_device_alloc("acerhdf", PLATFORM_DEVID_NONE);
+	acerhdf_dev = platform_device_alloc("acerhdf", -1);
 	if (!acerhdf_dev) {
 		err = -ENOMEM;
 		goto err_device_alloc;
@@ -809,24 +824,3 @@ MODULE_ALIAS("dmi:*:*Acer*:pnExtensa*5420*:");
 
 module_init(acerhdf_init);
 module_exit(acerhdf_exit);
-
-static int interval_set_uint(const char *val, const struct kernel_param *kp)
-{
-	int ret;
-
-	ret = param_set_uint(val, kp);
-	if (ret)
-		return ret;
-
-	acerhdf_check_param(thz_dev);
-
-	return 0;
-}
-
-static const struct kernel_param_ops interval_ops = {
-	.set = interval_set_uint,
-	.get = param_get_uint,
-};
-
-module_param_cb(interval, &interval_ops, &interval, 0600);
-MODULE_PARM_DESC(interval, "Polling interval of temperature check");

@@ -438,11 +438,13 @@ static int vidtv_demod_i2c_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void vidtv_demod_i2c_remove(struct i2c_client *client)
+static int vidtv_demod_i2c_remove(struct i2c_client *client)
 {
 	struct vidtv_demod_state *state = i2c_get_clientdata(client);
 
 	kfree(state);
+
+	return 0;
 }
 
 static struct i2c_driver vidtv_demod_i2c_driver = {

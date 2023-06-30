@@ -39,10 +39,10 @@ static struct hc_driver __read_mostly fsl_ehci_hc_driver;
 /*
  * fsl_ehci_drv_probe - initialize FSL-based HCDs
  * @pdev: USB Host Controller being probed
- *
- * Context: task context, might sleep
+ * Context: !in_interrupt()
  *
  * Allocates basic resources for this USB host controller.
+ *
  */
 static int fsl_ehci_drv_probe(struct platform_device *pdev)
 {
@@ -76,9 +76,14 @@ static int fsl_ehci_drv_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!res) {
+		dev_err(&pdev->dev,
+			"Found HC with no IRQ. Check %s setup!\n",
+			dev_name(&pdev->dev));
+		return -ENODEV;
+	}
+	irq = res->start;
 
 	hcd = __usb_create_hcd(&fsl_ehci_hc_driver, pdev->dev.parent,
 			       &pdev->dev, dev_name(&pdev->dev), NULL);
@@ -382,11 +387,11 @@ static int ehci_fsl_setup(struct usb_hcd *hcd)
 	/* EHCI registers start at offset 0x100 */
 	ehci->caps = hcd->regs + 0x100;
 
-#if defined(CONFIG_PPC_83xx) || defined(CONFIG_PPC_85xx)
+#ifdef CONFIG_PPC_83xx
 	/*
-	 * Deal with MPC834X/85XX that need port power to be cycled
-	 * after the power fault condition is removed. Otherwise the
-	 * state machine does not reflect PORTSC[CSC] correctly.
+	 * Deal with MPC834X that need port power to be cycled after the power
+	 * fault condition is removed. Otherwise the state machine does not
+	 * reflect PORTSC[CSC] correctly.
 	 */
 	ehci->need_oc_pp_cycle = 1;
 #endif
@@ -679,11 +684,12 @@ static const struct ehci_driver_overrides ehci_fsl_overrides __initconst = {
 /**
  * fsl_ehci_drv_remove - shutdown processing for FSL-based HCDs
  * @pdev: USB Host Controller being removed
- *
- * Context: task context, might sleep
+ * Context: !in_interrupt()
  *
  * Reverses the effect of usb_hcd_fsl_probe().
+ *
  */
+
 static int fsl_ehci_drv_remove(struct platform_device *pdev)
 {
 	struct fsl_usb2_platform_data *pdata = dev_get_platdata(&pdev->dev);
@@ -721,6 +727,8 @@ static int __init ehci_fsl_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
+
+	pr_info(DRV_NAME ": " DRIVER_DESC "\n");
 
 	ehci_init_driver(&fsl_ehci_hc_driver, &ehci_fsl_overrides);
 

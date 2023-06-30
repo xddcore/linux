@@ -65,7 +65,7 @@ qla24xx_deallocate_vp_id(scsi_qla_host_t *vha)
 	uint16_t vp_id;
 	struct qla_hw_data *ha = vha->hw;
 	unsigned long flags = 0;
-	u32 i, bailout;
+	u8 i;
 
 	mutex_lock(&ha->vport_lock);
 	/*
@@ -75,29 +75,21 @@ qla24xx_deallocate_vp_id(scsi_qla_host_t *vha)
 	 * ensures no active vp_list traversal while the vport is removed
 	 * from the queue)
 	 */
-	bailout = 0;
-	for (i = 0; i < 500; i++) {
-		spin_lock_irqsave(&ha->vport_slock, flags);
-		if (atomic_read(&vha->vref_count) == 0) {
-			list_del(&vha->list);
-			qlt_update_vp_map(vha, RESET_VP_IDX);
-			bailout = 1;
-		}
-		spin_unlock_irqrestore(&ha->vport_slock, flags);
-
-		if (bailout)
+	for (i = 0; i < 10; i++) {
+		if (wait_event_timeout(vha->vref_waitq,
+		    !atomic_read(&vha->vref_count), HZ) > 0)
 			break;
-		else
-			msleep(20);
 	}
-	if (!bailout) {
-		ql_log(ql_log_info, vha, 0xfffa,
-			"vha->vref_count=%u timeout\n", vha->vref_count.counter);
-		spin_lock_irqsave(&ha->vport_slock, flags);
-		list_del(&vha->list);
-		qlt_update_vp_map(vha, RESET_VP_IDX);
-		spin_unlock_irqrestore(&ha->vport_slock, flags);
+
+	spin_lock_irqsave(&ha->vport_slock, flags);
+	if (atomic_read(&vha->vref_count)) {
+		ql_dbg(ql_dbg_vport, vha, 0xfffa,
+		    "vha->vref_count=%u timeout\n", vha->vref_count.counter);
+		vha->vref_count = (atomic_t)ATOMIC_INIT(0);
 	}
+	list_del(&vha->list);
+	qlt_update_vp_map(vha, RESET_VP_IDX);
+	spin_unlock_irqrestore(&ha->vport_slock, flags);
 
 	vp_id = vha->vp_idx;
 	ha->num_vhosts--;
@@ -166,14 +158,6 @@ qla24xx_disable_vp(scsi_qla_host_t *vha)
 	int ret = QLA_SUCCESS;
 	fc_port_t *fcport;
 
-	if (vha->hw->flags.edif_enabled) {
-		if (DBELL_ACTIVE(vha))
-			qla2x00_post_aen_work(vha, FCH_EVT_VENDOR_UNIQUE,
-			    FCH_EVT_VENDOR_UNIQUE_VPORT_DOWN);
-		/* delete sessions and flush sa_indexes */
-		qla2x00_wait_for_sess_deletion(vha);
-	}
-
 	if (vha->hw->flags.fw_started)
 		ret = qla24xx_control_vp(vha, VCE_COMMAND_DISABLE_VPS_LOGO_ALL);
 
@@ -182,8 +166,7 @@ qla24xx_disable_vp(scsi_qla_host_t *vha)
 	list_for_each_entry(fcport, &vha->vp_fcports, list)
 		fcport->logout_on_delete = 0;
 
-	if (!vha->hw->flags.edif_enabled)
-		qla2x00_wait_for_sess_deletion(vha);
+	qla2x00_mark_all_devices_lost(vha);
 
 	/* Remove port id from vp target map */
 	spin_lock_irqsave(&vha->hw->hardware_lock, flags);
@@ -274,13 +257,13 @@ qla24xx_configure_vp(scsi_qla_host_t *vha)
 void
 qla2x00_alert_all_vps(struct rsp_que *rsp, uint16_t *mb)
 {
-	scsi_qla_host_t *vha, *tvp;
+	scsi_qla_host_t *vha;
 	struct qla_hw_data *ha = rsp->hw;
 	int i = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ha->vport_slock, flags);
-	list_for_each_entry_safe(vha, tvp, &ha->vp_list, list) {
+	list_for_each_entry(vha, &ha->vp_list, list) {
 		if (vha->vp_idx) {
 			if (test_bit(VPORT_DELETE, &vha->dpc_flags))
 				continue;
@@ -433,7 +416,7 @@ void
 qla2x00_do_dpc_all_vps(scsi_qla_host_t *vha)
 {
 	struct qla_hw_data *ha = vha->hw;
-	scsi_qla_host_t *vp, *tvp;
+	scsi_qla_host_t *vp;
 	unsigned long flags = 0;
 
 	if (vha->vp_idx)
@@ -447,7 +430,7 @@ qla2x00_do_dpc_all_vps(scsi_qla_host_t *vha)
 		return;
 
 	spin_lock_irqsave(&ha->vport_slock, flags);
-	list_for_each_entry_safe(vp, tvp, &ha->vp_list, list) {
+	list_for_each_entry(vp, &ha->vp_list, list) {
 		if (vp->vp_idx) {
 			atomic_inc(&vp->vref_count);
 			spin_unlock_irqrestore(&ha->vport_slock, flags);
@@ -595,6 +578,7 @@ qla25xx_free_req_que(struct scsi_qla_host *vha, struct req_que *req)
 	}
 	kfree(req->outstanding_cmds);
 	kfree(req);
+	req = NULL;
 }
 
 static void
@@ -620,6 +604,7 @@ qla25xx_free_rsp_que(struct scsi_qla_host *vha, struct rsp_que *rsp)
 		mutex_unlock(&ha->vport_lock);
 	}
 	kfree(rsp);
+	rsp = NULL;
 }
 
 int
@@ -967,7 +952,6 @@ int qla24xx_control_vp(scsi_qla_host_t *vha, int cmd)
 	if (vp_index == 0 || vp_index >= ha->max_npiv_vports)
 		return QLA_PARAMETER_ERROR;
 
-	/* ref: INIT */
 	sp = qla2x00_get_sp(base_vha, NULL, GFP_KERNEL);
 	if (!sp)
 		return rval;
@@ -975,8 +959,9 @@ int qla24xx_control_vp(scsi_qla_host_t *vha, int cmd)
 	sp->type = SRB_CTRL_VP;
 	sp->name = "ctrl_vp";
 	sp->comp = &comp;
-	qla2x00_init_async_sp(sp, qla2x00_get_async_timeout(vha) + 2,
-			      qla_ctrlvp_sp_done);
+	sp->done = qla_ctrlvp_sp_done;
+	sp->u.iocb_cmd.timeout = qla2x00_async_iocb_timeout;
+	qla2x00_init_timer(sp, qla2x00_get_async_timeout(vha) + 2);
 	sp->u.iocb_cmd.u.ctrlvp.cmd = cmd;
 	sp->u.iocb_cmd.u.ctrlvp.vp_index = vp_index;
 
@@ -1010,7 +995,6 @@ int qla24xx_control_vp(scsi_qla_host_t *vha, int cmd)
 		break;
 	}
 done:
-	/* ref: INIT */
-	kref_put(&sp->cmd_kref, qla2x00_sp_release);
+	sp->free(sp);
 	return rval;
 }

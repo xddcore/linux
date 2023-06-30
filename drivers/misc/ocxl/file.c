@@ -15,7 +15,7 @@
 
 static dev_t ocxl_dev;
 static struct class *ocxl_class;
-static DEFINE_MUTEX(minors_idr_lock);
+static struct mutex minors_idr_lock;
 static struct idr minors_idr;
 
 static struct ocxl_file_info *find_and_get_file_info(dev_t devno)
@@ -74,6 +74,7 @@ static long afu_ioctl_attach(struct ocxl_context *ctx,
 {
 	struct ocxl_ioctl_attach arg;
 	u64 amr = 0;
+	int rc;
 
 	pr_debug("%s for context %d\n", __func__, ctx->pasid);
 
@@ -85,7 +86,8 @@ static long afu_ioctl_attach(struct ocxl_context *ctx,
 		return -EINVAL;
 
 	amr = arg.amr & mfspr(SPRN_UAMOR);
-	return ocxl_context_attach(ctx, amr, current->mm);
+	rc = ocxl_context_attach(ctx, amr, current->mm);
+	return rc;
 }
 
 static long afu_ioctl_get_metadata(struct ocxl_context *ctx,
@@ -593,6 +595,7 @@ int ocxl_file_init(void)
 {
 	int rc;
 
+	mutex_init(&minors_idr_lock);
 	idr_init(&minors_idr);
 
 	rc = alloc_chrdev_region(&ocxl_dev, 0, OCXL_NUM_MINORS, "ocxl");

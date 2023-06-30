@@ -25,6 +25,7 @@ properties:
 
   reg:
     minItems: 2
+    maxItems: 3
     items:
       - description: XUSB device controller registers
       - description: XUSB device PCI Config registers
@@ -32,6 +33,7 @@ properties:
 
   reg-names:
     minItems: 2
+    maxItems: 3
     items:
       - const: base
       - const: fpci
@@ -43,6 +45,7 @@ properties:
 
   clocks:
     minItems: 4
+    maxItems: 5
     items:
       - description: Clock to enable core XUSB dev clock.
       - description: Clock to enable XUSB super speed clock.
@@ -52,25 +55,13 @@ properties:
 
   clock-names:
     minItems: 4
+    maxItems: 5
     items:
       - const: dev
       - const: ss
       - const: ss_src
       - const: fs_src
       - const: hs_src
-
-  interconnects:
-    items:
-      - description: memory read client
-      - description: memory write client
-
-  interconnect-names:
-    items:
-      - const: dma-mem # read
-      - const: write
-
-  iommus:
-    maxItems: 1
 
   power-domains:
     items:
@@ -83,7 +74,7 @@ properties:
       - const: ss
 
   nvidia,xusb-padctl:
-    $ref: /schemas/types.yaml#/definitions/phandle
+    $ref: /schemas/types.yaml#/definitions/phandle-array
     description:
       phandle to the XUSB pad controller that is used to configure the USB pads
       used by the XUDC controller.

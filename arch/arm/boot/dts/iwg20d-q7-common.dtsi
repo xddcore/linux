@@ -158,8 +158,6 @@
 	status = "okay";
 
 	phy3: ethernet-phy@3 {
-		compatible = "ethernet-phy-id0022.1622",
-			     "ethernet-phy-ieee802.3-c22";
 		reg = <3>;
 		micrel,led-mode = <1>;
 	};
@@ -181,7 +179,7 @@
 };
 
 &gpio2 {
-	touch-interrupt-hog {
+	touch-interrupt {
 		gpio-hog;
 		gpios = <12 GPIO_ACTIVE_LOW>;
 		input;
@@ -327,8 +325,8 @@
 
 	rcar_sound,dai {
 		dai0 {
-			playback = <&ssi1>, <&src3>, <&dvc1>;
-			capture = <&ssi0>, <&src2>, <&dvc0>;
+			playback = <&ssi1 &src3 &dvc1>;
+			capture = <&ssi0 &src2 &dvc0>;
 		};
 	};
 };

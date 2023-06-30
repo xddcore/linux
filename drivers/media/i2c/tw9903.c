@@ -235,12 +235,13 @@ static int tw9903_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void tw9903_remove(struct i2c_client *client)
+static int tw9903_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */

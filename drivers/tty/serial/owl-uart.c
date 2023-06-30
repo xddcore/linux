@@ -12,7 +12,6 @@
 #include <linux/console.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -62,9 +61,6 @@
 #define OWL_UART_STAT_TFES		BIT(10)
 #define OWL_UART_STAT_TRFL_MASK		GENMASK(16, 11)
 #define OWL_UART_STAT_UTBB		BIT(17)
-
-#define OWL_UART_POLL_USEC		5
-#define OWL_UART_TIMEOUT_USEC		10000
 
 static struct uart_driver owl_uart_driver;
 
@@ -184,6 +180,9 @@ static void owl_uart_send_chars(struct uart_port *port)
 	struct circ_buf *xmit = &port->state->xmit;
 	unsigned int ch;
 
+	if (uart_tx_stopped(port))
+		return;
+
 	if (port->x_char) {
 		while (!(owl_uart_read(port, OWL_UART_STAT) & OWL_UART_STAT_TFFU))
 			cpu_relax();
@@ -192,16 +191,13 @@ static void owl_uart_send_chars(struct uart_port *port)
 		port->x_char = 0;
 	}
 
-	if (uart_tx_stopped(port))
-		return;
-
 	while (!(owl_uart_read(port, OWL_UART_STAT) & OWL_UART_STAT_TFFU)) {
 		if (uart_circ_empty(xmit))
 			break;
 
 		ch = xmit->buf[xmit->tail];
 		owl_uart_write(port, ch, OWL_UART_TXDAT);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		xmit->tail = (xmit->tail + 1) & (SERIAL_XMIT_SIZE - 1);
 		port->icount.tx++;
 	}
 
@@ -247,7 +243,9 @@ static void owl_uart_receive_chars(struct uart_port *port)
 		stat = owl_uart_read(port, OWL_UART_STAT);
 	}
 
+	spin_unlock(&port->lock);
 	tty_flip_buffer_push(&port->state->port);
+	spin_lock(&port->lock);
 }
 
 static irqreturn_t owl_uart_irq(int irq, void *dev_id)
@@ -328,7 +326,7 @@ static void owl_uart_change_baudrate(struct owl_uart_port *owl_port,
 
 static void owl_uart_set_termios(struct uart_port *port,
 				 struct ktermios *termios,
-				 const struct ktermios *old)
+				 struct ktermios *old)
 {
 	struct owl_uart_port *owl_port = to_owl_uart_port(port);
 	unsigned int baud;
@@ -463,36 +461,6 @@ static void owl_uart_config_port(struct uart_port *port, int flags)
 	}
 }
 
-#ifdef CONFIG_CONSOLE_POLL
-
-static int owl_uart_poll_get_char(struct uart_port *port)
-{
-	if (owl_uart_read(port, OWL_UART_STAT) & OWL_UART_STAT_RFEM)
-		return NO_POLL_CHAR;
-
-	return owl_uart_read(port, OWL_UART_RXDAT);
-}
-
-static void owl_uart_poll_put_char(struct uart_port *port, unsigned char ch)
-{
-	u32 reg;
-	int ret;
-
-	/* Wait while FIFO is full or timeout */
-	ret = readl_poll_timeout_atomic(port->membase + OWL_UART_STAT, reg,
-					!(reg & OWL_UART_STAT_TFFU),
-					OWL_UART_POLL_USEC,
-					OWL_UART_TIMEOUT_USEC);
-	if (ret == -ETIMEDOUT) {
-		dev_err(port->dev, "Timeout waiting while UART TX FULL\n");
-		return;
-	}
-
-	owl_uart_write(port, ch, OWL_UART_TXDAT);
-}
-
-#endif /* CONFIG_CONSOLE_POLL */
-
 static const struct uart_ops owl_uart_ops = {
 	.set_mctrl = owl_uart_set_mctrl,
 	.get_mctrl = owl_uart_get_mctrl,
@@ -508,15 +476,11 @@ static const struct uart_ops owl_uart_ops = {
 	.request_port = owl_uart_request_port,
 	.release_port = owl_uart_release_port,
 	.verify_port = owl_uart_verify_port,
-#ifdef CONFIG_CONSOLE_POLL
-	.poll_get_char = owl_uart_poll_get_char,
-	.poll_put_char = owl_uart_poll_put_char,
-#endif
 };
 
 #ifdef CONFIG_SERIAL_OWL_CONSOLE
 
-static void owl_console_putchar(struct uart_port *port, unsigned char ch)
+static void owl_console_putchar(struct uart_port *port, int ch)
 {
 	if (!port->membase)
 		return;

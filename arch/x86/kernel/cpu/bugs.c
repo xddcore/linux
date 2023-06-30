@@ -23,7 +23,7 @@
 #include <asm/bugs.h>
 #include <asm/processor.h>
 #include <asm/processor-flags.h>
-#include <asm/fpu/api.h>
+#include <asm/fpu/internal.h>
 #include <asm/msr.h>
 #include <asm/vmx.h>
 #include <asm/paravirt.h>
@@ -48,7 +48,6 @@ static void __init md_clear_select_mitigation(void);
 static void __init taa_select_mitigation(void);
 static void __init mmio_select_mitigation(void);
 static void __init srbds_select_mitigation(void);
-static void __init l1d_flush_select_mitigation(void);
 
 /* The base value of the SPEC_CTRL MSR without task-specific bits set */
 u64 x86_spec_ctrl_base;
@@ -113,13 +112,6 @@ EXPORT_SYMBOL_GPL(mds_user_clear);
 DEFINE_STATIC_KEY_FALSE(mds_idle_clear);
 EXPORT_SYMBOL_GPL(mds_idle_clear);
 
-/*
- * Controls whether l1d flush based mitigations are enabled,
- * based on hw features and admin setting via boot parameter
- * defaults to false
- */
-DEFINE_STATIC_KEY_FALSE(switch_mm_cond_l1d_flush);
-
 /* Controls CPU Fill buffer clear before KVM guest MMIO accesses */
 DEFINE_STATIC_KEY_FALSE(mmio_stale_data_clear);
 EXPORT_SYMBOL_GPL(mmio_stale_data_clear);
@@ -174,7 +166,6 @@ void __init check_bugs(void)
 	l1tf_select_mitigation();
 	md_clear_select_mitigation();
 	srbds_select_mitigation();
-	l1d_flush_select_mitigation();
 
 	arch_smt_update();
 
@@ -211,14 +202,21 @@ void __init check_bugs(void)
 }
 
 /*
- * NOTE: This function is *only* called for SVM, since Intel uses
- * MSR_IA32_SPEC_CTRL for SSBD.
+ * NOTE: For VMX, this function is not called in the vmexit path.
+ * It uses vmx_spec_ctrl_restore_host() instead.
  */
 void
-x86_virt_spec_ctrl(u64 guest_virt_spec_ctrl, bool setguest)
+x86_virt_spec_ctrl(u64 guest_spec_ctrl, u64 guest_virt_spec_ctrl, bool setguest)
 {
-	u64 guestval, hostval;
+	u64 msrval, guestval = guest_spec_ctrl, hostval = spec_ctrl_current();
 	struct thread_info *ti = current_thread_info();
+
+	if (static_cpu_has(X86_FEATURE_MSR_SPEC_CTRL)) {
+		if (hostval != guestval) {
+			msrval = setguest ? guestval : hostval;
+			wrmsrl(MSR_IA32_SPEC_CTRL, msrval);
+		}
+	}
 
 	/*
 	 * If SSBD is not handled in MSR_SPEC_CTRL on AMD, update
@@ -601,13 +599,6 @@ void update_srbds_msr(void)
 	if (srbds_mitigation == SRBDS_MITIGATION_UCODE_NEEDED)
 		return;
 
-	/*
-	 * A MDS_NO CPU for which SRBDS mitigation is not needed due to TSX
-	 * being disabled and it hasn't received the SRBDS MSR microcode.
-	 */
-	if (!boot_cpu_has(X86_FEATURE_SRBDS_CTRL))
-		return;
-
 	rdmsrl(MSR_IA32_MCU_OPT_CTRL, mcu_ctrl);
 
 	switch (srbds_mitigation) {
@@ -664,34 +655,6 @@ static int __init srbds_parse_cmdline(char *str)
 	return 0;
 }
 early_param("srbds", srbds_parse_cmdline);
-
-#undef pr_fmt
-#define pr_fmt(fmt)     "L1D Flush : " fmt
-
-enum l1d_flush_mitigations {
-	L1D_FLUSH_OFF = 0,
-	L1D_FLUSH_ON,
-};
-
-static enum l1d_flush_mitigations l1d_flush_mitigation __initdata = L1D_FLUSH_OFF;
-
-static void __init l1d_flush_select_mitigation(void)
-{
-	if (!l1d_flush_mitigation || !boot_cpu_has(X86_FEATURE_FLUSH_L1D))
-		return;
-
-	static_branch_enable(&switch_mm_cond_l1d_flush);
-	pr_info("Conditional flush on switch_mm() enabled\n");
-}
-
-static int __init l1d_flush_parse_cmdline(char *str)
-{
-	if (!strcmp(str, "on"))
-		l1d_flush_mitigation = L1D_FLUSH_ON;
-
-	return 0;
-}
-early_param("l1d_flush", l1d_flush_parse_cmdline);
 
 #undef pr_fmt
 #define pr_fmt(fmt)     "Spectre V1 : " fmt
@@ -804,7 +767,7 @@ enum retbleed_mitigation_cmd {
 	RETBLEED_CMD_IBPB,
 };
 
-static const char * const retbleed_strings[] = {
+const char * const retbleed_strings[] = {
 	[RETBLEED_MITIGATION_NONE]	= "Vulnerable",
 	[RETBLEED_MITIGATION_UNRET]	= "Mitigation: untrained return thunk",
 	[RETBLEED_MITIGATION_IBPB]	= "Mitigation: IBPB",
@@ -1136,11 +1099,11 @@ spectre_v2_user_select_mitigation(void)
 	case SPECTRE_V2_USER_CMD_FORCE:
 		mode = SPECTRE_V2_USER_STRICT;
 		break;
-	case SPECTRE_V2_USER_CMD_AUTO:
 	case SPECTRE_V2_USER_CMD_PRCTL:
 	case SPECTRE_V2_USER_CMD_PRCTL_IBPB:
 		mode = SPECTRE_V2_USER_PRCTL;
 		break;
+	case SPECTRE_V2_USER_CMD_AUTO:
 	case SPECTRE_V2_USER_CMD_SECCOMP:
 	case SPECTRE_V2_USER_CMD_SECCOMP_IBPB:
 		if (IS_ENABLED(CONFIG_SECCOMP))
@@ -1785,6 +1748,7 @@ static enum ssb_mitigation __init __ssb_select_mitigation(void)
 		return mode;
 
 	switch (cmd) {
+	case SPEC_STORE_BYPASS_CMD_AUTO:
 	case SPEC_STORE_BYPASS_CMD_SECCOMP:
 		/*
 		 * Choose prctl+seccomp as the default mode if seccomp is
@@ -1798,7 +1762,6 @@ static enum ssb_mitigation __init __ssb_select_mitigation(void)
 	case SPEC_STORE_BYPASS_CMD_ON:
 		mode = SPEC_STORE_BYPASS_DISABLE;
 		break;
-	case SPEC_STORE_BYPASS_CMD_AUTO:
 	case SPEC_STORE_BYPASS_CMD_PRCTL:
 		mode = SPEC_STORE_BYPASS_PRCTL;
 		break;
@@ -1856,24 +1819,6 @@ static void task_update_spec_tif(struct task_struct *tsk)
 	 */
 	if (tsk == current)
 		speculation_ctrl_update_current();
-}
-
-static int l1d_flush_prctl_set(struct task_struct *task, unsigned long ctrl)
-{
-
-	if (!static_branch_unlikely(&switch_mm_cond_l1d_flush))
-		return -EPERM;
-
-	switch (ctrl) {
-	case PR_SPEC_ENABLE:
-		set_ti_thread_flag(&task->thread_info, TIF_SPEC_L1D_FLUSH);
-		return 0;
-	case PR_SPEC_DISABLE:
-		clear_ti_thread_flag(&task->thread_info, TIF_SPEC_L1D_FLUSH);
-		return 0;
-	default:
-		return -ERANGE;
-	}
 }
 
 static int ssb_prctl_set(struct task_struct *task, unsigned long ctrl)
@@ -1987,8 +1932,6 @@ int arch_prctl_spec_ctrl_set(struct task_struct *task, unsigned long which,
 		return ssb_prctl_set(task, ctrl);
 	case PR_SPEC_INDIRECT_BRANCH:
 		return ib_prctl_set(task, ctrl);
-	case PR_SPEC_L1D_FLUSH:
-		return l1d_flush_prctl_set(task, ctrl);
 	default:
 		return -ENODEV;
 	}
@@ -2004,17 +1947,6 @@ void arch_seccomp_spec_mitigate(struct task_struct *task)
 		ib_prctl_set(task, PR_SPEC_FORCE_DISABLE);
 }
 #endif
-
-static int l1d_flush_prctl_get(struct task_struct *task)
-{
-	if (!static_branch_unlikely(&switch_mm_cond_l1d_flush))
-		return PR_SPEC_FORCE_DISABLE;
-
-	if (test_ti_thread_flag(&task->thread_info, TIF_SPEC_L1D_FLUSH))
-		return PR_SPEC_PRCTL | PR_SPEC_ENABLE;
-	else
-		return PR_SPEC_PRCTL | PR_SPEC_DISABLE;
-}
 
 static int ssb_prctl_get(struct task_struct *task)
 {
@@ -2066,8 +1998,6 @@ int arch_prctl_spec_ctrl_get(struct task_struct *task, unsigned long which)
 		return ssb_prctl_get(task);
 	case PR_SPEC_INDIRECT_BRANCH:
 		return ib_prctl_get(task);
-	case PR_SPEC_L1D_FLUSH:
-		return l1d_flush_prctl_get(task);
 	default:
 		return -ENODEV;
 	}

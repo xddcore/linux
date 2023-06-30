@@ -22,14 +22,14 @@
 	gpio_keys: gpio-keys {
 		compatible = "gpio-keys";
 
-		key-power {
+		power {
 			label = "Power";
 			gpios = <&gpio5 8 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_POWER>;
 			wakeup-source;
 		};
 
-		key-cover {
+		cover {
 			label = "Cover";
 			gpios = <&gpio5 12 GPIO_ACTIVE_LOW>;
 			linux,code = <SW_LID>;
@@ -41,7 +41,7 @@
 	leds: leds {
 		compatible = "gpio-leds";
 
-		led {
+		on {
 			label = "e60k02:white:on";
 			gpios = <&gpio5 7 GPIO_ACTIVE_LOW>;
 			linux,default-trigger = "timer";
@@ -278,12 +278,6 @@
 };
 
 &uart1 {
-	/* J4, through-hole */
-	status = "okay";
-};
-
-&uart4 {
-	/* TP198, next to J4, SMD pads */
 	status = "okay";
 };
 

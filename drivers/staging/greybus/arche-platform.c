@@ -77,8 +77,9 @@ static void arche_platform_set_state(struct arche_platform_drvdata *arche_pdata,
 }
 
 /* Requires arche_pdata->wake_lock is held by calling context */
-static void arche_platform_set_wake_detect_state(struct arche_platform_drvdata *arche_pdata,
-						 enum svc_wakedetect_state state)
+static void arche_platform_set_wake_detect_state(
+				struct arche_platform_drvdata *arche_pdata,
+				enum svc_wakedetect_state state)
 {
 	arche_pdata->wake_detect_state = state;
 }
@@ -180,8 +181,9 @@ static irqreturn_t arche_platform_wd_irq(int irq, void *devid)
 						WD_STATE_COLDBOOT_START) {
 					arche_platform_set_wake_detect_state(arche_pdata,
 									     WD_STATE_COLDBOOT_TRIG);
-					spin_unlock_irqrestore(&arche_pdata->wake_lock,
-							       flags);
+					spin_unlock_irqrestore(
+						&arche_pdata->wake_lock,
+						flags);
 					return IRQ_WAKE_THREAD;
 				}
 			}
@@ -591,7 +593,7 @@ static __maybe_unused int arche_platform_suspend(struct device *dev)
 static __maybe_unused int arche_platform_resume(struct device *dev)
 {
 	/*
-	 * At least for ES2 we have to meet the delay requirement between
+	 * Atleast for ES2 we have to meet the delay requirement between
 	 * unipro switch and AP bridge init, depending on whether bridge is in
 	 * OFF state or standby state.
 	 *

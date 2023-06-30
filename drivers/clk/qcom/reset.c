@@ -13,10 +13,8 @@
 
 static int qcom_reset(struct reset_controller_dev *rcdev, unsigned long id)
 {
-	struct qcom_reset_controller *rst = to_qcom_reset_controller(rcdev);
-
 	rcdev->ops->assert(rcdev, id);
-	udelay(rst->reset_map[id].udelay ?: 1); /* use 1 us as default */
+	udelay(1);
 	rcdev->ops->deassert(rcdev, id);
 	return 0;
 }

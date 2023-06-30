@@ -587,7 +587,7 @@ err_mem_free:
 	return ret;
 }
 
-static void synaptics_i2c_remove(struct i2c_client *client)
+static int synaptics_i2c_remove(struct i2c_client *client)
 {
 	struct synaptics_i2c *touch = i2c_get_clientdata(client);
 
@@ -596,6 +596,8 @@ static void synaptics_i2c_remove(struct i2c_client *client)
 
 	input_unregister_device(touch->input);
 	kfree(touch);
+
+	return 0;
 }
 
 static int __maybe_unused synaptics_i2c_suspend(struct device *dev)

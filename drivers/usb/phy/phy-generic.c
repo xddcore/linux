@@ -230,9 +230,12 @@ int usb_phy_gen_create_phy(struct device *dev, struct usb_phy_generic *nop)
 		err = PTR_ERR_OR_ZERO(nop->gpiod_vbus);
 	}
 
-	if (err)
-		return dev_err_probe(dev, err,
-				     "Error requesting RESET or VBUS GPIO\n");
+	if (err == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (err) {
+		dev_err(dev, "Error requesting RESET or VBUS GPIO\n");
+		return err;
+	}
 	if (nop->gpiod_reset)
 		gpiod_direction_output(nop->gpiod_reset, 1);
 

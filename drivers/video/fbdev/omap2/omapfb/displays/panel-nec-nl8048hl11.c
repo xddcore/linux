@@ -117,11 +117,16 @@ static int nec_8048_connect(struct omap_dss_device *dssdev)
 {
 	struct panel_drv_data *ddata = to_panel_data(dssdev);
 	struct omap_dss_device *in = ddata->in;
+	int r;
 
 	if (omapdss_device_is_connected(dssdev))
 		return 0;
 
-	return in->ops.dpi->connect(in, dssdev);
+	r = in->ops.dpi->connect(in, dssdev);
+	if (r)
+		return r;
+
+	return 0;
 }
 
 static void nec_8048_disconnect(struct omap_dss_device *dssdev)
@@ -322,7 +327,7 @@ err_gpio:
 	return r;
 }
 
-static void nec_8048_remove(struct spi_device *spi)
+static int nec_8048_remove(struct spi_device *spi)
 {
 	struct panel_drv_data *ddata = dev_get_drvdata(&spi->dev);
 	struct omap_dss_device *dssdev = &ddata->dssdev;
@@ -336,6 +341,8 @@ static void nec_8048_remove(struct spi_device *spi)
 	nec_8048_disconnect(dssdev);
 
 	omap_dss_put_device(in);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

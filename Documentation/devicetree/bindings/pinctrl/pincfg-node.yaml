@@ -52,19 +52,11 @@ properties:
       hardware supporting it the pull strength in Ohm.
 
   drive-push-pull:
-    oneOf:
-      - type: boolean
-      - $ref: /schemas/types.yaml#/definitions/uint32
-        enum: [ 0, 1 ]
-        deprecated: true
+    type: boolean
     description: drive actively high and low
 
   drive-open-drain:
-    oneOf:
-      - type: boolean
-      - $ref: /schemas/types.yaml#/definitions/uint32
-        const: 1    # No known cases of 0
-        deprecated: true
+    type: boolean
     description: drive with open drain
 
   drive-open-source:
@@ -121,9 +113,6 @@ properties:
     type: boolean
     description: enable output on a pin without actively driving it
       (such as enabling an output buffer)
-
-  output-impedance-ohms:
-    description: set the output impedance of a pin to at most X ohms
 
   output-low:
     type: boolean

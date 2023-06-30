@@ -17,10 +17,8 @@
 #include <linux/pm.h>
 #include <linux/thermal.h>
 #include <linux/debugfs.h>
-
 #include <asm/cpu_device_id.h>
-
-#include "thermal_interrupt.h"
+#include <asm/mce.h>
 
 /*
 * Rate control delay: Idea is to introduce denounce effect
@@ -105,7 +103,7 @@ static struct zone_device *pkg_temp_thermal_get_dev(unsigned int cpu)
 }
 
 /*
-* tj-max is interesting because threshold is set relative to this
+* tj-max is is interesting because threshold is set relative to this
 * temperature.
 */
 static int get_tj_max(int cpu, u32 *tj_max)

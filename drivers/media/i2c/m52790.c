@@ -154,11 +154,12 @@ static int m52790_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void m52790_remove(struct i2c_client *client)
+static int m52790_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */

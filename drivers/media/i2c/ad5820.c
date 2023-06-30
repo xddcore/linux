@@ -270,7 +270,8 @@ static const struct v4l2_subdev_internal_ops ad5820_internal_ops = {
  */
 static int __maybe_unused ad5820_suspend(struct device *dev)
 {
-	struct v4l2_subdev *subdev = dev_get_drvdata(dev);
+	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ad5820_device *coil = to_ad5820_device(subdev);
 
 	if (!coil->power_count)
@@ -281,7 +282,8 @@ static int __maybe_unused ad5820_suspend(struct device *dev)
 
 static int __maybe_unused ad5820_resume(struct device *dev)
 {
-	struct v4l2_subdev *subdev = dev_get_drvdata(dev);
+	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ad5820_device *coil = to_ad5820_device(subdev);
 
 	if (!coil->power_count)
@@ -342,7 +344,7 @@ clean_mutex:
 	return ret;
 }
 
-static void ad5820_remove(struct i2c_client *client)
+static int ad5820_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ad5820_device *coil = to_ad5820_device(subdev);
@@ -351,6 +353,7 @@ static void ad5820_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&coil->ctrls);
 	media_entity_cleanup(&coil->subdev.entity);
 	mutex_destroy(&coil->power_lock);
+	return 0;
 }
 
 static const struct i2c_device_id ad5820_id_table[] = {

@@ -11,11 +11,9 @@
 
 
 struct msm_fence_context *
-msm_fence_context_alloc(struct drm_device *dev, volatile uint32_t *fenceptr,
-		const char *name)
+msm_fence_context_alloc(struct drm_device *dev, const char *name)
 {
 	struct msm_fence_context *fctx;
-	static int index = 0;
 
 	fctx = kzalloc(sizeof(*fctx), GFP_KERNEL);
 	if (!fctx)
@@ -24,17 +22,8 @@ msm_fence_context_alloc(struct drm_device *dev, volatile uint32_t *fenceptr,
 	fctx->dev = dev;
 	strscpy(fctx->name, name, sizeof(fctx->name));
 	fctx->context = dma_fence_context_alloc(1);
-	fctx->index = index++;
-	fctx->fenceptr = fenceptr;
+	init_waitqueue_head(&fctx->event);
 	spin_lock_init(&fctx->spinlock);
-
-	/*
-	 * Start out close to the 32b fence rollover point, so we can
-	 * catch bugs with fence comparisons.
-	 */
-	fctx->last_fence = 0xffffff00;
-	fctx->completed_fence = fctx->last_fence;
-	*fctx->fenceptr = fctx->last_fence;
 
 	return fctx;
 }
@@ -44,25 +33,58 @@ void msm_fence_context_free(struct msm_fence_context *fctx)
 	kfree(fctx);
 }
 
-bool msm_fence_completed(struct msm_fence_context *fctx, uint32_t fence)
+static inline bool fence_completed(struct msm_fence_context *fctx, uint32_t fence)
 {
-	/*
-	 * Note: Check completed_fence first, as fenceptr is in a write-combine
-	 * mapping, so it will be more expensive to read.
-	 */
-	return (int32_t)(fctx->completed_fence - fence) >= 0 ||
-		(int32_t)(*fctx->fenceptr - fence) >= 0;
+	return (int32_t)(fctx->completed_fence - fence) >= 0;
 }
 
-/* called from irq handler and workqueue (in recover path) */
+/* legacy path for WAIT_FENCE ioctl: */
+int msm_wait_fence(struct msm_fence_context *fctx, uint32_t fence,
+		ktime_t *timeout, bool interruptible)
+{
+	int ret;
+
+	if (fence > fctx->last_fence) {
+		DRM_ERROR_RATELIMITED("%s: waiting on invalid fence: %u (of %u)\n",
+				fctx->name, fence, fctx->last_fence);
+		return -EINVAL;
+	}
+
+	if (!timeout) {
+		/* no-wait: */
+		ret = fence_completed(fctx, fence) ? 0 : -EBUSY;
+	} else {
+		unsigned long remaining_jiffies = timeout_to_jiffies(timeout);
+
+		if (interruptible)
+			ret = wait_event_interruptible_timeout(fctx->event,
+				fence_completed(fctx, fence),
+				remaining_jiffies);
+		else
+			ret = wait_event_timeout(fctx->event,
+				fence_completed(fctx, fence),
+				remaining_jiffies);
+
+		if (ret == 0) {
+			DBG("timeout waiting for fence: %u (completed: %u)",
+					fence, fctx->completed_fence);
+			ret = -ETIMEDOUT;
+		} else if (ret != -ERESTARTSYS) {
+			ret = 0;
+		}
+	}
+
+	return ret;
+}
+
+/* called from workqueue */
 void msm_update_fence(struct msm_fence_context *fctx, uint32_t fence)
 {
-	unsigned long flags;
+	spin_lock(&fctx->spinlock);
+	fctx->completed_fence = max(fence, fctx->completed_fence);
+	spin_unlock(&fctx->spinlock);
 
-	spin_lock_irqsave(&fctx->spinlock, flags);
-	if (fence_after(fence, fctx->completed_fence))
-		fctx->completed_fence = fence;
-	spin_unlock_irqrestore(&fctx->spinlock, flags);
+	wake_up_all(&fctx->event);
 }
 
 struct msm_fence {
@@ -89,7 +111,7 @@ static const char *msm_fence_get_timeline_name(struct dma_fence *fence)
 static bool msm_fence_signaled(struct dma_fence *fence)
 {
 	struct msm_fence *f = to_msm_fence(fence);
-	return msm_fence_completed(f->fctx, f->base.seqno);
+	return fence_completed(f->fctx, f->base.seqno);
 }
 
 static const struct dma_fence_ops msm_fence_ops = {

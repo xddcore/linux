@@ -1276,10 +1276,11 @@ ERROR0:;
 	return err;
 }
 
-static void maven_remove(struct i2c_client *client)
+static int maven_remove(struct i2c_client *client)
 {
 	maven_shutdown_client(client);
 	kfree(i2c_get_clientdata(client));
+	return 0;
 }
 
 static const struct i2c_device_id maven_id[] = {

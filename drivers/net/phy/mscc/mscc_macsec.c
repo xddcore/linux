@@ -707,6 +707,14 @@ static int __vsc8584_macsec_add_rxsa(struct macsec_context *ctx,
 	struct phy_device *phydev = ctx->phydev;
 	struct vsc8531_private *priv = phydev->priv;
 
+	if (!flow) {
+		flow = vsc8584_macsec_alloc_flow(priv, MACSEC_INGR);
+		if (IS_ERR(flow))
+			return PTR_ERR(flow);
+
+		memcpy(flow->key, ctx->sa.key, priv->secy->key_len);
+	}
+
 	flow->assoc_num = ctx->sa.assoc_num;
 	flow->rx_sa = ctx->sa.rx_sa;
 
@@ -723,19 +731,34 @@ static int __vsc8584_macsec_add_rxsa(struct macsec_context *ctx,
 static int __vsc8584_macsec_add_txsa(struct macsec_context *ctx,
 				     struct macsec_flow *flow, bool update)
 {
+	struct phy_device *phydev = ctx->phydev;
+	struct vsc8531_private *priv = phydev->priv;
+
+	if (!flow) {
+		flow = vsc8584_macsec_alloc_flow(priv, MACSEC_EGR);
+		if (IS_ERR(flow))
+			return PTR_ERR(flow);
+
+		memcpy(flow->key, ctx->sa.key, priv->secy->key_len);
+	}
+
 	flow->assoc_num = ctx->sa.assoc_num;
 	flow->tx_sa = ctx->sa.tx_sa;
 
 	/* Always match untagged packets on egress */
 	flow->match.untagged = 1;
 
-	return vsc8584_macsec_add_flow(ctx->phydev, flow, update);
+	return vsc8584_macsec_add_flow(phydev, flow, update);
 }
 
 static int vsc8584_macsec_dev_open(struct macsec_context *ctx)
 {
 	struct vsc8531_private *priv = ctx->phydev->priv;
 	struct macsec_flow *flow, *tmp;
+
+	/* No operation to perform before the commit step */
+	if (ctx->prepare)
+		return 0;
 
 	list_for_each_entry_safe(flow, tmp, &priv->macsec_flows, list)
 		vsc8584_macsec_flow_enable(ctx->phydev, flow);
@@ -748,6 +771,10 @@ static int vsc8584_macsec_dev_stop(struct macsec_context *ctx)
 	struct vsc8531_private *priv = ctx->phydev->priv;
 	struct macsec_flow *flow, *tmp;
 
+	/* No operation to perform before the commit step */
+	if (ctx->prepare)
+		return 0;
+
 	list_for_each_entry_safe(flow, tmp, &priv->macsec_flows, list)
 		vsc8584_macsec_flow_disable(ctx->phydev, flow);
 
@@ -759,8 +786,12 @@ static int vsc8584_macsec_add_secy(struct macsec_context *ctx)
 	struct vsc8531_private *priv = ctx->phydev->priv;
 	struct macsec_secy *secy = ctx->secy;
 
-	if (priv->secy)
-		return -EEXIST;
+	if (ctx->prepare) {
+		if (priv->secy)
+			return -EEXIST;
+
+		return 0;
+	}
 
 	priv->secy = secy;
 
@@ -777,6 +808,10 @@ static int vsc8584_macsec_del_secy(struct macsec_context *ctx)
 	struct vsc8531_private *priv = ctx->phydev->priv;
 	struct macsec_flow *flow, *tmp;
 
+	/* No operation to perform before the commit step */
+	if (ctx->prepare)
+		return 0;
+
 	list_for_each_entry_safe(flow, tmp, &priv->macsec_flows, list)
 		vsc8584_macsec_del_flow(ctx->phydev, flow);
 
@@ -789,6 +824,10 @@ static int vsc8584_macsec_del_secy(struct macsec_context *ctx)
 
 static int vsc8584_macsec_upd_secy(struct macsec_context *ctx)
 {
+	/* No operation to perform before the commit step */
+	if (ctx->prepare)
+		return 0;
+
 	vsc8584_macsec_del_secy(ctx);
 	return vsc8584_macsec_add_secy(ctx);
 }
@@ -809,6 +848,10 @@ static int vsc8584_macsec_del_rxsc(struct macsec_context *ctx)
 	struct vsc8531_private *priv = ctx->phydev->priv;
 	struct macsec_flow *flow, *tmp;
 
+	/* No operation to perform before the commit step */
+	if (ctx->prepare)
+		return 0;
+
 	list_for_each_entry_safe(flow, tmp, &priv->macsec_flows, list) {
 		if (flow->bank == MACSEC_INGR && flow->rx_sa &&
 		    flow->rx_sa->sc->sci == ctx->rx_sc->sci)
@@ -820,40 +863,33 @@ static int vsc8584_macsec_del_rxsc(struct macsec_context *ctx)
 
 static int vsc8584_macsec_add_rxsa(struct macsec_context *ctx)
 {
-	struct phy_device *phydev = ctx->phydev;
-	struct vsc8531_private *priv = phydev->priv;
-	struct macsec_flow *flow;
-	int ret;
+	struct macsec_flow *flow = NULL;
 
-	flow = vsc8584_macsec_alloc_flow(priv, MACSEC_INGR);
+	if (ctx->prepare)
+		return __vsc8584_macsec_add_rxsa(ctx, flow, false);
+
+	flow = vsc8584_macsec_find_flow(ctx, MACSEC_INGR);
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
 
-	memcpy(flow->key, ctx->sa.key, priv->secy->key_len);
-
-	ret = __vsc8584_macsec_add_rxsa(ctx, flow, false);
-	if (ret)
-		return ret;
-
-	vsc8584_macsec_flow_enable(phydev, flow);
+	vsc8584_macsec_flow_enable(ctx->phydev, flow);
 	return 0;
 }
 
 static int vsc8584_macsec_upd_rxsa(struct macsec_context *ctx)
 {
 	struct macsec_flow *flow;
-	int ret;
 
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_INGR);
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
 
-	/* Make sure the flow is disabled before updating it */
-	vsc8584_macsec_flow_disable(ctx->phydev, flow);
+	if (ctx->prepare) {
+		/* Make sure the flow is disabled before updating it */
+		vsc8584_macsec_flow_disable(ctx->phydev, flow);
 
-	ret = __vsc8584_macsec_add_rxsa(ctx, flow, true);
-	if (ret)
-		return ret;
+		return __vsc8584_macsec_add_rxsa(ctx, flow, true);
+	}
 
 	vsc8584_macsec_flow_enable(ctx->phydev, flow);
 	return 0;
@@ -864,8 +900,11 @@ static int vsc8584_macsec_del_rxsa(struct macsec_context *ctx)
 	struct macsec_flow *flow;
 
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_INGR);
+
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
+	if (ctx->prepare)
+		return 0;
 
 	vsc8584_macsec_del_flow(ctx->phydev, flow);
 	return 0;
@@ -873,40 +912,33 @@ static int vsc8584_macsec_del_rxsa(struct macsec_context *ctx)
 
 static int vsc8584_macsec_add_txsa(struct macsec_context *ctx)
 {
-	struct phy_device *phydev = ctx->phydev;
-	struct vsc8531_private *priv = phydev->priv;
-	struct macsec_flow *flow;
-	int ret;
+	struct macsec_flow *flow = NULL;
 
-	flow = vsc8584_macsec_alloc_flow(priv, MACSEC_EGR);
+	if (ctx->prepare)
+		return __vsc8584_macsec_add_txsa(ctx, flow, false);
+
+	flow = vsc8584_macsec_find_flow(ctx, MACSEC_EGR);
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
 
-	memcpy(flow->key, ctx->sa.key, priv->secy->key_len);
-
-	ret = __vsc8584_macsec_add_txsa(ctx, flow, false);
-	if (ret)
-		return ret;
-
-	vsc8584_macsec_flow_enable(phydev, flow);
+	vsc8584_macsec_flow_enable(ctx->phydev, flow);
 	return 0;
 }
 
 static int vsc8584_macsec_upd_txsa(struct macsec_context *ctx)
 {
 	struct macsec_flow *flow;
-	int ret;
 
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_EGR);
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
 
-	/* Make sure the flow is disabled before updating it */
-	vsc8584_macsec_flow_disable(ctx->phydev, flow);
+	if (ctx->prepare) {
+		/* Make sure the flow is disabled before updating it */
+		vsc8584_macsec_flow_disable(ctx->phydev, flow);
 
-	ret = __vsc8584_macsec_add_txsa(ctx, flow, true);
-	if (ret)
-		return ret;
+		return __vsc8584_macsec_add_txsa(ctx, flow, true);
+	}
 
 	vsc8584_macsec_flow_enable(ctx->phydev, flow);
 	return 0;
@@ -917,8 +949,11 @@ static int vsc8584_macsec_del_txsa(struct macsec_context *ctx)
 	struct macsec_flow *flow;
 
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_EGR);
+
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
+	if (ctx->prepare)
+		return 0;
 
 	vsc8584_macsec_del_flow(ctx->phydev, flow);
 	return 0;

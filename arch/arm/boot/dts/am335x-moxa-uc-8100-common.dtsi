@@ -310,15 +310,17 @@
 	regulator-max-microvolt = <5000000>;
 };
 
-&mac_sw {
+&mac {
 	pinctrl-names = "default";
 	pinctrl-0 = <&cpsw_default>;
+	dual_emac = <1>;
 	status = "okay";
 };
 
-&davinci_mdio_sw {
+&davinci_mdio {
 	pinctrl-names = "default";
 	pinctrl-0 = <&davinci_mdio_default>;
+	status = "okay";
 
 	ethphy0: ethernet-phy@4 {
 		reg = <4>;
@@ -329,16 +331,18 @@
 	};
 };
 
-&cpsw_port1 {
+&cpsw_emac0 {
+	status = "okay";
 	phy-handle = <&ethphy0>;
 	phy-mode = "rmii";
-	ti,dual-emac-pvid = <1>;
+	dual_emac_res_vlan = <1>;
 };
 
-&cpsw_port2 {
+&cpsw_emac1 {
+	status = "okay";
 	phy-handle = <&ethphy1>;
 	phy-mode = "rmii";
-	ti,dual-emac-pvid = <2>;
+	dual_emac_res_vlan = <2>;
 };
 
 &sham {
@@ -378,8 +382,10 @@
 &buttons {
 	pinctrl-names = "default";
 	pinctrl-0 = <&push_button_pins>;
+	#address-cells = <1>;
+	#size-cells = <0>;
 
-	button-0 {
+	button@0 {
 		label = "push_button";
 		linux,code = <0x100>;
 		gpios = <&gpio3 21 GPIO_ACTIVE_LOW>;
@@ -392,7 +398,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&spi0_pins>;
 
-	flash@0 {
+	m25p80@0 {
 		compatible = "mx25l6405d";
 		spi-max-frequency = <40000000>;
 

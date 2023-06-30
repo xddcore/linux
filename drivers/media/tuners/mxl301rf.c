@@ -307,13 +307,14 @@ static int mxl301rf_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void mxl301rf_remove(struct i2c_client *client)
+static int mxl301rf_remove(struct i2c_client *client)
 {
 	struct mxl301rf_state *state;
 
 	state = cfg_to_state(i2c_get_clientdata(client));
 	state->cfg.fe->tuner_priv = NULL;
 	kfree(state);
+	return 0;
 }
 
 

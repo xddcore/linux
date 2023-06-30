@@ -18,6 +18,7 @@
 #include <media/videobuf2-dma-contig.h>
 
 #define ISS_VIDEO_DRIVER_NAME		"issvideo"
+#define ISS_VIDEO_DRIVER_VERSION	"0.0.2"
 
 struct iss_device;
 struct iss_video;
@@ -90,15 +91,8 @@ struct iss_pipeline {
 	int external_bpp;
 };
 
-static inline struct iss_pipeline *to_iss_pipeline(struct media_entity *entity)
-{
-	struct media_pipeline *pipe = media_entity_pipeline(entity);
-
-	if (!pipe)
-		return NULL;
-
-	return container_of(pipe, struct iss_pipeline, pipe);
-}
+#define to_iss_pipeline(__e) \
+	container_of((__e)->pipe, struct iss_pipeline, pipe)
 
 static inline int iss_pipeline_ready(struct iss_pipeline *pipe)
 {

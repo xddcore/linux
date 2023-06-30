@@ -5,7 +5,6 @@
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
 #include <uapi/drm/drm_fourcc.h>
-#include <drm/drm_framebuffer.h>
 
 #include "msm_media_info.h"
 #include "dpu_kms.h"
@@ -23,7 +22,7 @@
 #define DPU_MAX_IMG_WIDTH		0x3FFF
 #define DPU_MAX_IMG_HEIGHT		0x3FFF
 
-/*
+/**
  * DPU supported format packing, bpp, and other format
  * information.
  * DPU currently only supports interleaved RGB formats
@@ -993,7 +992,7 @@ const struct dpu_format *dpu_get_dpu_format_ext(
 	 * Currently only support exactly zero or one modifier.
 	 * All planes use the same modifier.
 	 */
-	DRM_DEBUG_ATOMIC("plane format modifier 0x%llX\n", modifier);
+	DPU_DEBUG("plane format modifier 0x%llX\n", modifier);
 
 	switch (modifier) {
 	case 0:
@@ -1003,7 +1002,7 @@ const struct dpu_format *dpu_get_dpu_format_ext(
 	case DRM_FORMAT_MOD_QCOM_COMPRESSED:
 		map = dpu_format_map_ubwc;
 		map_size = ARRAY_SIZE(dpu_format_map_ubwc);
-		DRM_DEBUG_ATOMIC("found fmt: %4.4s  DRM_FORMAT_MOD_QCOM_COMPRESSED\n",
+		DPU_DEBUG("found fmt: %4.4s  DRM_FORMAT_MOD_QCOM_COMPRESSED\n",
 				(char *)&format);
 		break;
 	default:
@@ -1022,7 +1021,7 @@ const struct dpu_format *dpu_get_dpu_format_ext(
 		DPU_ERROR("unsupported fmt: %4.4s modifier 0x%llX\n",
 			(char *)&format, modifier);
 	else
-		DRM_DEBUG_ATOMIC("fmt %4.4s mod 0x%llX ubwc %d yuv %d\n",
+		DPU_DEBUG("fmt %4.4s mod 0x%llX ubwc %d yuv %d\n",
 				(char *)&format, modifier,
 				DPU_FORMAT_IS_UBWC(fmt),
 				DPU_FORMAT_IS_YUV(fmt));

@@ -35,15 +35,6 @@ struct nvkm_fifo_chan_object {
 	int hash;
 };
 
-static struct nvkm_fifo_engn *
-nvkm_fifo_chan_engn(struct nvkm_fifo_chan *chan, struct nvkm_engine *engine)
-{
-	int engi = chan->fifo->func->engine_id(chan->fifo, engine);
-	if (engi >= 0)
-		return &chan->engn[engi];
-	return NULL;
-}
-
 static int
 nvkm_fifo_chan_child_fini(struct nvkm_oproxy *base, bool suspend)
 {
@@ -51,8 +42,8 @@ nvkm_fifo_chan_child_fini(struct nvkm_oproxy *base, bool suspend)
 		container_of(base, typeof(*object), oproxy);
 	struct nvkm_engine *engine  = object->oproxy.object->engine;
 	struct nvkm_fifo_chan *chan = object->chan;
-	struct nvkm_fifo_engn *engn = nvkm_fifo_chan_engn(chan, engine);
-	const char *name = engine->subdev.name;
+	struct nvkm_fifo_engn *engn = &chan->engn[engine->subdev.index];
+	const char *name = nvkm_subdev_name[engine->subdev.index];
 	int ret = 0;
 
 	if (--engn->usecount)
@@ -84,8 +75,8 @@ nvkm_fifo_chan_child_init(struct nvkm_oproxy *base)
 		container_of(base, typeof(*object), oproxy);
 	struct nvkm_engine *engine  = object->oproxy.object->engine;
 	struct nvkm_fifo_chan *chan = object->chan;
-	struct nvkm_fifo_engn *engn = nvkm_fifo_chan_engn(chan, engine);
-	const char *name = engine->subdev.name;
+	struct nvkm_fifo_engn *engn = &chan->engn[engine->subdev.index];
+	const char *name = nvkm_subdev_name[engine->subdev.index];
 	int ret;
 
 	if (engn->usecount++)
@@ -117,7 +108,7 @@ nvkm_fifo_chan_child_del(struct nvkm_oproxy *base)
 		container_of(base, typeof(*object), oproxy);
 	struct nvkm_engine *engine  = object->oproxy.base.engine;
 	struct nvkm_fifo_chan *chan = object->chan;
-	struct nvkm_fifo_engn *engn = nvkm_fifo_chan_engn(chan, engine);
+	struct nvkm_fifo_engn *engn = &chan->engn[engine->subdev.index];
 
 	if (chan->func->object_dtor)
 		chan->func->object_dtor(chan, object->hash);
@@ -127,7 +118,7 @@ nvkm_fifo_chan_child_del(struct nvkm_oproxy *base)
 			chan->func->engine_dtor(chan, engine);
 		nvkm_object_del(&engn->object);
 		if (chan->vmm)
-			atomic_dec(&chan->vmm->engref[engine->subdev.type]);
+			atomic_dec(&chan->vmm->engref[engine->subdev.index]);
 	}
 }
 
@@ -144,7 +135,7 @@ nvkm_fifo_chan_child_new(const struct nvkm_oclass *oclass, void *data, u32 size,
 {
 	struct nvkm_engine *engine = oclass->engine;
 	struct nvkm_fifo_chan *chan = nvkm_fifo_chan(oclass->parent);
-	struct nvkm_fifo_engn *engn = nvkm_fifo_chan_engn(chan, engine);
+	struct nvkm_fifo_engn *engn = &chan->engn[engine->subdev.index];
 	struct nvkm_fifo_chan_object *object;
 	int ret = 0;
 
@@ -161,7 +152,7 @@ nvkm_fifo_chan_child_new(const struct nvkm_oclass *oclass, void *data, u32 size,
 		};
 
 		if (chan->vmm)
-			atomic_inc(&chan->vmm->engref[engine->subdev.type]);
+			atomic_inc(&chan->vmm->engref[engine->subdev.index]);
 
 		if (engine->func->fifo.cclass) {
 			ret = engine->func->fifo.cclass(chan, &cclass,
@@ -212,12 +203,13 @@ nvkm_fifo_chan_child_get(struct nvkm_object *object, int index,
 {
 	struct nvkm_fifo_chan *chan = nvkm_fifo_chan(object);
 	struct nvkm_fifo *fifo = chan->fifo;
+	struct nvkm_device *device = fifo->engine.subdev.device;
 	struct nvkm_engine *engine;
-	u32 engm = chan->engm;
-	int engi, ret, c;
+	u64 mask = chan->engines;
+	int ret, i, c;
 
-	for (; c = 0, engi = __ffs(engm), engm; engm &= ~(1ULL << engi)) {
-		if (!(engine = fifo->func->id_engine(fifo, engi)))
+	for (; c = 0, i = __ffs64(mask), mask; mask &= ~(1ULL << i)) {
+		if (!(engine = nvkm_device_engine(device, i)))
 			continue;
 		oclass->engine = engine;
 		oclass->base.oclass = 0;
@@ -272,6 +264,36 @@ nvkm_fifo_chan_map(struct nvkm_object *object, void *argv, u32 argc,
 }
 
 static int
+nvkm_fifo_chan_rd32(struct nvkm_object *object, u64 addr, u32 *data)
+{
+	struct nvkm_fifo_chan *chan = nvkm_fifo_chan(object);
+	if (unlikely(!chan->user)) {
+		chan->user = ioremap(chan->addr, chan->size);
+		if (!chan->user)
+			return -ENOMEM;
+	}
+	if (unlikely(addr + 4 > chan->size))
+		return -EINVAL;
+	*data = ioread32_native(chan->user + addr);
+	return 0;
+}
+
+static int
+nvkm_fifo_chan_wr32(struct nvkm_object *object, u64 addr, u32 data)
+{
+	struct nvkm_fifo_chan *chan = nvkm_fifo_chan(object);
+	if (unlikely(!chan->user)) {
+		chan->user = ioremap(chan->addr, chan->size);
+		if (!chan->user)
+			return -ENOMEM;
+	}
+	if (unlikely(addr + 4 > chan->size))
+		return -EINVAL;
+	iowrite32_native(data, chan->user + addr);
+	return 0;
+}
+
+static int
 nvkm_fifo_chan_fini(struct nvkm_object *object, bool suspend)
 {
 	struct nvkm_fifo_chan *chan = nvkm_fifo_chan(object);
@@ -302,6 +324,9 @@ nvkm_fifo_chan_dtor(struct nvkm_object *object)
 	}
 	spin_unlock_irqrestore(&fifo->lock, flags);
 
+	if (chan->user)
+		iounmap(chan->user);
+
 	if (chan->vmm) {
 		nvkm_vmm_part(chan->vmm, chan->inst->memory);
 		nvkm_vmm_unref(&chan->vmm);
@@ -319,13 +344,15 @@ nvkm_fifo_chan_func = {
 	.fini = nvkm_fifo_chan_fini,
 	.ntfy = nvkm_fifo_chan_ntfy,
 	.map = nvkm_fifo_chan_map,
+	.rd32 = nvkm_fifo_chan_rd32,
+	.wr32 = nvkm_fifo_chan_wr32,
 	.sclass = nvkm_fifo_chan_child_get,
 };
 
 int
 nvkm_fifo_chan_ctor(const struct nvkm_fifo_chan_func *func,
 		    struct nvkm_fifo *fifo, u32 size, u32 align, bool zero,
-		    u64 hvmm, u64 push, u32 engm, int bar, u32 base,
+		    u64 hvmm, u64 push, u64 engines, int bar, u32 base,
 		    u32 user, const struct nvkm_oclass *oclass,
 		    struct nvkm_fifo_chan *chan)
 {
@@ -338,7 +365,7 @@ nvkm_fifo_chan_ctor(const struct nvkm_fifo_chan_func *func,
 	nvkm_object_ctor(&nvkm_fifo_chan_func, oclass, &chan->object);
 	chan->func = func;
 	chan->fifo = fifo;
-	chan->engm = engm;
+	chan->engines = engines;
 	INIT_LIST_HEAD(&chan->head);
 
 	/* instance memory */
@@ -389,5 +416,7 @@ nvkm_fifo_chan_ctor(const struct nvkm_fifo_chan_func *func,
 	chan->addr = device->func->resource_addr(device, bar) +
 		     base + user * chan->chid;
 	chan->size = user;
+
+	nvkm_fifo_cevent(fifo);
 	return 0;
 }

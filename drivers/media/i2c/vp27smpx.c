@@ -163,11 +163,12 @@ static int vp27smpx_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void vp27smpx_remove(struct i2c_client *client)
+static int vp27smpx_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */

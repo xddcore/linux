@@ -32,9 +32,11 @@ static int bmg160_i2c_probe(struct i2c_client *client,
 	return bmg160_core_probe(&client->dev, regmap, client->irq, name);
 }
 
-static void bmg160_i2c_remove(struct i2c_client *client)
+static int bmg160_i2c_remove(struct i2c_client *client)
 {
 	bmg160_core_remove(&client->dev);
+
+	return 0;
 }
 
 static const struct acpi_device_id bmg160_acpi_match[] = {

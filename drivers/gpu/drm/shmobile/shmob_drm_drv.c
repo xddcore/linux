@@ -17,8 +17,8 @@
 
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_gem_dma_helper.h>
-#include <drm/drm_module.h>
+#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_irq.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -126,11 +126,12 @@ static irqreturn_t shmob_drm_irq(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-DEFINE_DRM_GEM_DMA_FOPS(shmob_drm_fops);
+DEFINE_DRM_GEM_CMA_FOPS(shmob_drm_fops);
 
-static const struct drm_driver shmob_drm_driver = {
+static struct drm_driver shmob_drm_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET,
-	DRM_GEM_DMA_DRIVER_OPS,
+	.irq_handler		= shmob_drm_irq,
+	DRM_GEM_CMA_DRIVER_OPS,
 	.fops			= &shmob_drm_fops,
 	.name			= "shmob-drm",
 	.desc			= "Renesas SH Mobile DRM",
@@ -182,7 +183,7 @@ static int shmob_drm_remove(struct platform_device *pdev)
 
 	drm_dev_unregister(ddev);
 	drm_kms_helper_poll_fini(ddev);
-	free_irq(sdev->irq, ddev);
+	drm_irq_uninstall(ddev);
 	drm_dev_put(ddev);
 
 	return 0;
@@ -193,6 +194,7 @@ static int shmob_drm_probe(struct platform_device *pdev)
 	struct shmob_drm_platform_data *pdata = pdev->dev.platform_data;
 	struct shmob_drm_device *sdev;
 	struct drm_device *ddev;
+	struct resource *res;
 	unsigned int i;
 	int ret;
 
@@ -215,7 +217,8 @@ static int shmob_drm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, sdev);
 
-	sdev->mmio = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	sdev->mmio = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(sdev->mmio))
 		return PTR_ERR(sdev->mmio);
 
@@ -255,13 +258,7 @@ static int shmob_drm_probe(struct platform_device *pdev)
 		goto err_modeset_cleanup;
 	}
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		goto err_modeset_cleanup;
-	sdev->irq = ret;
-
-	ret = request_irq(sdev->irq, shmob_drm_irq, 0, ddev->driver->name,
-			  ddev);
+	ret = drm_irq_install(ddev, platform_get_irq(pdev, 0));
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to install IRQ handler\n");
 		goto err_modeset_cleanup;
@@ -278,7 +275,7 @@ static int shmob_drm_probe(struct platform_device *pdev)
 	return 0;
 
 err_irq_uninstall:
-	free_irq(sdev->irq, ddev);
+	drm_irq_uninstall(ddev);
 err_modeset_cleanup:
 	drm_kms_helper_poll_fini(ddev);
 err_free_drm_dev:
@@ -296,7 +293,7 @@ static struct platform_driver shmob_drm_platform_driver = {
 	},
 };
 
-drm_module_platform_driver(shmob_drm_platform_driver);
+module_platform_driver(shmob_drm_platform_driver);
 
 MODULE_AUTHOR("Laurent Pinchart <laurent.pinchart@ideasonboard.com>");
 MODULE_DESCRIPTION("Renesas SH Mobile DRM Driver");

@@ -156,20 +156,14 @@ static int rpcif_spi_probe(struct platform_device *pdev)
 	ctlr->mode_bits = SPI_CPOL | SPI_CPHA | SPI_TX_QUAD | SPI_RX_QUAD;
 	ctlr->flags = SPI_CONTROLLER_HALF_DUPLEX;
 
-	error = rpcif_hw_init(rpc, false);
-	if (error)
-		goto out_disable_rpm;
+	rpcif_hw_init(rpc, false);
 
 	error = spi_register_controller(ctlr);
 	if (error) {
 		dev_err(&pdev->dev, "spi_register_controller failed\n");
-		goto out_disable_rpm;
+		rpcif_disable_rpm(rpc);
 	}
 
-	return 0;
-
-out_disable_rpm:
-	rpcif_disable_rpm(rpc);
 	return error;
 }
 
@@ -184,14 +178,15 @@ static int rpcif_spi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused rpcif_spi_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int rpcif_spi_suspend(struct device *dev)
 {
 	struct spi_controller *ctlr = dev_get_drvdata(dev);
 
 	return spi_controller_suspend(ctlr);
 }
 
-static int __maybe_unused rpcif_spi_resume(struct device *dev)
+static int rpcif_spi_resume(struct device *dev)
 {
 	struct spi_controller *ctlr = dev_get_drvdata(dev);
 
@@ -199,15 +194,17 @@ static int __maybe_unused rpcif_spi_resume(struct device *dev)
 }
 
 static SIMPLE_DEV_PM_OPS(rpcif_spi_pm_ops, rpcif_spi_suspend, rpcif_spi_resume);
+#define DEV_PM_OPS	(&rpcif_spi_pm_ops)
+#else
+#define DEV_PM_OPS	NULL
+#endif
 
 static struct platform_driver rpcif_spi_driver = {
 	.probe	= rpcif_spi_probe,
 	.remove	= rpcif_spi_remove,
 	.driver = {
 		.name	= "rpc-if-spi",
-#ifdef CONFIG_PM_SLEEP
-		.pm	= &rpcif_spi_pm_ops,
-#endif
+		.pm	= DEV_PM_OPS,
 	},
 };
 module_platform_driver(rpcif_spi_driver);

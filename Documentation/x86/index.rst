@@ -21,24 +21,15 @@ x86-specific Documentation
    tlb
    mtrr
    pat
-   intel-hfi
-   iommu
+   intel-iommu
    intel_txt
    amd-memory-encryption
-   amd_hsmp
-   tdx
    pti
    mds
    microcode
-   resctrl
+   resctrl_ui
    tsx_async_abort
-   buslock
    usb-legacy-support
    i386/index
    x86_64/index
-   ifs
    sva
-   sgx
-   features
-   elf_auxvec
-   xstate

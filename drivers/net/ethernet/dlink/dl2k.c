@@ -95,7 +95,7 @@ static const struct net_device_ops netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_set_rx_mode	= set_multicast,
-	.ndo_eth_ioctl		= rio_ioctl,
+	.ndo_do_ioctl		= rio_ioctl,
 	.ndo_tx_timeout		= rio_tx_timeout,
 };
 
@@ -349,7 +349,8 @@ parse_eeprom (struct net_device *dev)
 	}
 
 	/* Set MAC address */
-	eth_hw_addr_set(dev, psrom->mac_addr);
+	for (i = 0; i < 6; i++)
+		dev->dev_addr[i] = psrom->mac_addr[i];
 
 	if (np->chip_id == CHIP_IP1000A) {
 		np->led_mode = psrom->led_mode;
@@ -566,7 +567,7 @@ static void rio_hw_init(struct net_device *dev)
 	 */
 	for (i = 0; i < 3; i++)
 		dw16(StationAddr0 + 2 * i,
-		     cpu_to_le16(((const u16 *)dev->dev_addr)[i]));
+		     cpu_to_le16(((u16 *)dev->dev_addr)[i]));
 
 	set_multicast (dev);
 	if (np->coalesce) {
@@ -1235,8 +1236,8 @@ static void rio_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info
 {
 	struct netdev_private *np = netdev_priv(dev);
 
-	strscpy(info->driver, "dl2k", sizeof(info->driver));
-	strscpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
+	strlcpy(info->driver, "dl2k", sizeof(info->driver));
+	strlcpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
 }
 
 static int rio_get_link_ksettings(struct net_device *dev,

@@ -15,7 +15,7 @@
 #include "iscsi_target_parameters.h"
 
 int iscsi_login_rx_data(
-	struct iscsit_conn *conn,
+	struct iscsi_conn *conn,
 	char *buf,
 	int length)
 {
@@ -37,7 +37,7 @@ int iscsi_login_rx_data(
 }
 
 int iscsi_login_tx_data(
-	struct iscsit_conn *conn,
+	struct iscsi_conn *conn,
 	char *pdu_buf,
 	char *text_buf,
 	int text_length)
@@ -955,7 +955,7 @@ out:
 }
 
 static int iscsi_check_acceptor_state(struct iscsi_param *param, char *value,
-				struct iscsit_conn *conn)
+				struct iscsi_conn *conn)
 {
 	u8 acceptor_boolean_value = 0, proposer_boolean_value = 0;
 	char *negotiated_value = NULL;
@@ -1354,17 +1354,19 @@ int iscsi_decode_text_input(
 	u8 sender,
 	char *textbuf,
 	u32 length,
-	struct iscsit_conn *conn)
+	struct iscsi_conn *conn)
 {
 	struct iscsi_param_list *param_list = conn->param_list;
 	char *tmpbuf, *start = NULL, *end = NULL;
 
-	tmpbuf = kmemdup_nul(textbuf, length, GFP_KERNEL);
+	tmpbuf = kzalloc(length + 1, GFP_KERNEL);
 	if (!tmpbuf) {
 		pr_err("Unable to allocate %u + 1 bytes for tmpbuf.\n", length);
 		return -ENOMEM;
 	}
 
+	memcpy(tmpbuf, textbuf, length);
+	tmpbuf[length] = '\0';
 	start = tmpbuf;
 	end = (start + length);
 

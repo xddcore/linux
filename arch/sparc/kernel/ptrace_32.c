@@ -21,6 +21,7 @@
 #include <linux/signal.h>
 #include <linux/regset.h>
 #include <linux/elf.h>
+#include <linux/tracehook.h>
 
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
@@ -438,9 +439,9 @@ asmlinkage int syscall_trace(struct pt_regs *regs, int syscall_exit_p)
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE)) {
 		if (syscall_exit_p)
-			ptrace_report_syscall_exit(regs, 0);
+			tracehook_report_syscall_exit(regs, 0);
 		else
-			ret = ptrace_report_syscall_entry(regs);
+			ret = tracehook_report_syscall_entry(regs);
 	}
 
 	return ret;

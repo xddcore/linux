@@ -14,7 +14,6 @@
 #include <linux/elf.h>
 #include <linux/vmalloc.h>
 #include <linux/fs.h>
-#include <linux/ftrace.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/kasan.h>
@@ -24,8 +23,6 @@
 #include <asm/alternative.h>
 #include <asm/nospec-branch.h>
 #include <asm/facility.h>
-#include <asm/ftrace.lds.h>
-#include <asm/set_memory.h>
 
 #if 0
 #define DEBUGP printk
@@ -37,27 +34,19 @@
 
 void *module_alloc(unsigned long size)
 {
-	gfp_t gfp_mask = GFP_KERNEL;
 	void *p;
 
 	if (PAGE_ALIGN(size) > MODULES_LEN)
 		return NULL;
 	p = __vmalloc_node_range(size, MODULE_ALIGN, MODULES_VADDR, MODULES_END,
-				 gfp_mask, PAGE_KERNEL_EXEC, VM_DEFER_KMEMLEAK, NUMA_NO_NODE,
+				 GFP_KERNEL, PAGE_KERNEL_EXEC, 0, NUMA_NO_NODE,
 				 __builtin_return_address(0));
-	if (p && (kasan_alloc_module_shadow(p, size, gfp_mask) < 0)) {
+	if (p && (kasan_module_alloc(p, size) < 0)) {
 		vfree(p);
 		return NULL;
 	}
 	return p;
 }
-
-#ifdef CONFIG_FUNCTION_TRACER
-void module_arch_cleanup(struct module *mod)
-{
-	module_memfree(mod->arch.trampolines_start);
-}
-#endif
 
 void module_arch_freeing_init(struct module *mod)
 {
@@ -476,30 +465,6 @@ int apply_relocate_add(Elf_Shdr *sechdrs, const char *strtab,
 				    write);
 }
 
-#ifdef CONFIG_FUNCTION_TRACER
-static int module_alloc_ftrace_hotpatch_trampolines(struct module *me,
-						    const Elf_Shdr *s)
-{
-	char *start, *end;
-	int numpages;
-	size_t size;
-
-	size = FTRACE_HOTPATCH_TRAMPOLINES_SIZE(s->sh_size);
-	numpages = DIV_ROUND_UP(size, PAGE_SIZE);
-	start = module_alloc(numpages * PAGE_SIZE);
-	if (!start)
-		return -ENOMEM;
-	set_memory_ro((unsigned long)start, numpages);
-	end = start + size;
-
-	me->arch.trampolines_start = (struct ftrace_hotpatch_trampoline *)start;
-	me->arch.trampolines_end = (struct ftrace_hotpatch_trampoline *)end;
-	me->arch.next_trampoline = me->arch.trampolines_start;
-
-	return 0;
-}
-#endif /* CONFIG_FUNCTION_TRACER */
-
 int module_finalize(const Elf_Ehdr *hdr,
 		    const Elf_Shdr *sechdrs,
 		    struct module *me)
@@ -507,9 +472,6 @@ int module_finalize(const Elf_Ehdr *hdr,
 	const Elf_Shdr *s;
 	char *secstrings, *secname;
 	void *aseg;
-#ifdef CONFIG_FUNCTION_TRACER
-	int ret;
-#endif
 
 	if (IS_ENABLED(CONFIG_EXPOLINE) &&
 	    !nospec_disable && me->arch.plt_size) {
@@ -517,9 +479,15 @@ int module_finalize(const Elf_Ehdr *hdr,
 
 		ij = me->core_layout.base + me->arch.plt_offset +
 			me->arch.plt_size - PLT_ENTRY_SIZE;
-		ij[0] = 0xc6000000;	/* exrl	%r0,.+10	*/
-		ij[1] = 0x0005a7f4;	/* j	.		*/
-		ij[2] = 0x000007f1;	/* br	%r1		*/
+		if (test_facility(35)) {
+			ij[0] = 0xc6000000;	/* exrl	%r0,.+10	*/
+			ij[1] = 0x0005a7f4;	/* j	.		*/
+			ij[2] = 0x000007f1;	/* br	%r1		*/
+		} else {
+			ij[0] = 0x44000000 | (unsigned int)
+				offsetof(struct lowcore, br_r1_trampoline);
+			ij[1] = 0xa7f40000;	/* j	.		*/
+		}
 	}
 
 	secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
@@ -538,15 +506,8 @@ int module_finalize(const Elf_Ehdr *hdr,
 		if (IS_ENABLED(CONFIG_EXPOLINE) &&
 		    (str_has_prefix(secname, ".s390_return")))
 			nospec_revert(aseg, aseg + s->sh_size);
-
-#ifdef CONFIG_FUNCTION_TRACER
-		if (!strcmp(FTRACE_CALLSITE_SECTION, secname)) {
-			ret = module_alloc_ftrace_hotpatch_trampolines(me, s);
-			if (ret < 0)
-				return ret;
-		}
-#endif /* CONFIG_FUNCTION_TRACER */
 	}
 
+	jump_label_apply_nops(me);
 	return 0;
 }

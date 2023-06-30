@@ -22,6 +22,7 @@
 #include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/rtas.h>
+#include <asm/prom.h>
 #include <asm/nvram.h>
 #include <linux/atomic.h>
 #include <asm/machdep.h>
@@ -428,7 +429,7 @@ static void rtas_event_scan(struct work_struct *w)
 
 	do_event_scan();
 
-	cpus_read_lock();
+	get_online_cpus();
 
 	/* raw_ OK because just using CPU as starting point. */
 	cpu = cpumask_next(raw_smp_processor_id(), cpu_online_mask);
@@ -450,11 +451,11 @@ static void rtas_event_scan(struct work_struct *w)
 	schedule_delayed_work_on(cpu, &event_scan_work,
 		__round_jiffies_relative(event_scan_delay, cpu));
 
-	cpus_read_unlock();
+	put_online_cpus();
 }
 
 #ifdef CONFIG_PPC64
-static void __init retrieve_nvram_error_log(void)
+static void retrieve_nvram_error_log(void)
 {
 	unsigned int err_type ;
 	int rc ;
@@ -472,12 +473,12 @@ static void __init retrieve_nvram_error_log(void)
 	}
 }
 #else /* CONFIG_PPC64 */
-static void __init retrieve_nvram_error_log(void)
+static void retrieve_nvram_error_log(void)
 {
 }
 #endif /* CONFIG_PPC64 */
 
-static void __init start_event_scan(void)
+static void start_event_scan(void)
 {
 	printk(KERN_DEBUG "RTAS daemon started\n");
 	pr_debug("rtasd: will sleep for %d milliseconds\n",

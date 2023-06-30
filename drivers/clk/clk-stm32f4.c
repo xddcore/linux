@@ -705,10 +705,10 @@ static unsigned long stm32f4_pll_div_recalc_rate(struct clk_hw *hw,
 	return clk_divider_ops.recalc_rate(hw, parent_rate);
 }
 
-static int stm32f4_pll_div_determine_rate(struct clk_hw *hw,
-					  struct clk_rate_request *req)
+static long stm32f4_pll_div_round_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long *prate)
 {
-	return clk_divider_ops.determine_rate(hw, req);
+	return clk_divider_ops.round_rate(hw, rate, prate);
 }
 
 static int stm32f4_pll_div_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -734,7 +734,7 @@ static int stm32f4_pll_div_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops stm32f4_pll_div_ops = {
 	.recalc_rate = stm32f4_pll_div_recalc_rate,
-	.determine_rate = stm32f4_pll_div_determine_rate,
+	.round_rate = stm32f4_pll_div_round_rate,
 	.set_rate = stm32f4_pll_div_set_rate,
 };
 

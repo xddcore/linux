@@ -19,16 +19,16 @@ int rxe_cq_chk_attr(struct rxe_dev *rxe, struct rxe_cq *cq,
 	}
 
 	if (cqe > rxe->attr.max_cqe) {
-		pr_debug("cqe(%d) > max_cqe(%d)\n",
-				cqe, rxe->attr.max_cqe);
+		pr_warn("cqe(%d) > max_cqe(%d)\n",
+			cqe, rxe->attr.max_cqe);
 		goto err1;
 	}
 
 	if (cq) {
-		count = queue_count(cq->queue, QUEUE_TYPE_TO_CLIENT);
+		count = queue_count(cq->queue);
 		if (cqe < count) {
-			pr_debug("cqe(%d) < current # elements in queue (%d)",
-					cqe, count);
+			pr_warn("cqe(%d) < current # elements in queue (%d)",
+				cqe, count);
 			goto err1;
 		}
 	}
@@ -59,11 +59,9 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 		     struct rxe_create_cq_resp __user *uresp)
 {
 	int err;
-	enum queue_type type;
 
-	type = QUEUE_TYPE_TO_CLIENT;
 	cq->queue = rxe_queue_init(rxe, &cqe,
-			sizeof(struct rxe_cqe), type);
+				   sizeof(struct rxe_cqe));
 	if (!cq->queue) {
 		pr_warn("unable to create cq\n");
 		return -ENOMEM;
@@ -77,7 +75,8 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 		return err;
 	}
 
-	cq->is_user = uresp;
+	if (uresp)
+		cq->is_user = 1;
 
 	cq->is_dying = false;
 
@@ -106,14 +105,11 @@ int rxe_cq_resize_queue(struct rxe_cq *cq, int cqe,
 int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 {
 	struct ib_event ev;
-	int full;
-	void *addr;
 	unsigned long flags;
 
 	spin_lock_irqsave(&cq->cq_lock, flags);
 
-	full = queue_full(cq->queue, QUEUE_TYPE_TO_CLIENT);
-	if (unlikely(full)) {
+	if (unlikely(queue_full(cq->queue))) {
 		spin_unlock_irqrestore(&cq->cq_lock, flags);
 		if (cq->ibcq.event_handler) {
 			ev.device = cq->ibcq.device;
@@ -125,11 +121,14 @@ int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 		return -EBUSY;
 	}
 
-	addr = queue_producer_addr(cq->queue, QUEUE_TYPE_TO_CLIENT);
-	memcpy(addr, cqe, sizeof(*cqe));
+	memcpy(producer_addr(cq->queue), cqe, sizeof(*cqe));
 
-	queue_advance_producer(cq->queue, QUEUE_TYPE_TO_CLIENT);
+	/* make sure all changes to the CQ are written before we update the
+	 * producer pointer
+	 */
+	smp_wmb();
 
+	advance_producer(cq->queue);
 	spin_unlock_irqrestore(&cq->cq_lock, flags);
 
 	if ((cq->notify == IB_CQ_NEXT_COMP) ||
@@ -150,9 +149,9 @@ void rxe_cq_disable(struct rxe_cq *cq)
 	spin_unlock_irqrestore(&cq->cq_lock, flags);
 }
 
-void rxe_cq_cleanup(struct rxe_pool_elem *elem)
+void rxe_cq_cleanup(struct rxe_pool_entry *arg)
 {
-	struct rxe_cq *cq = container_of(elem, typeof(*cq), elem);
+	struct rxe_cq *cq = container_of(arg, typeof(*cq), pelem);
 
 	if (cq->queue)
 		rxe_queue_cleanup(cq->queue);

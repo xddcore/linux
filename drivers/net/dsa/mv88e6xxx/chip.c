@@ -12,7 +12,6 @@
 
 #include <linux/bitfield.h>
 #include <linux/delay.h>
-#include <linux/dsa/mv88e6xxx.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/if_bridge.h>
@@ -86,16 +85,12 @@ int mv88e6xxx_write(struct mv88e6xxx_chip *chip, int addr, int reg, u16 val)
 int mv88e6xxx_wait_mask(struct mv88e6xxx_chip *chip, int addr, int reg,
 			u16 mask, u16 val)
 {
-	const unsigned long timeout = jiffies + msecs_to_jiffies(50);
 	u16 data;
 	int err;
 	int i;
 
-	/* There's no bus specific operation to wait for a mask. Even
-	 * if the initial poll takes longer than 50ms, always do at
-	 * least one more attempt.
-	 */
-	for (i = 0; time_before(jiffies, timeout) || (i < 2); i++) {
+	/* There's no bus specific operation to wait for a mask */
+	for (i = 0; i < 16; i++) {
 		err = mv88e6xxx_read(chip, addr, reg, &data);
 		if (err)
 			return err;
@@ -103,10 +98,7 @@ int mv88e6xxx_wait_mask(struct mv88e6xxx_chip *chip, int addr, int reg,
 		if ((data & mask) == val)
 			return 0;
 
-		if (i < 2)
-			cpu_relax();
-		else
-			usleep_range(1000, 2000);
+		usleep_range(1000, 2000);
 	}
 
 	dev_err(chip->dev, "Timeout while waiting for switch\n");
@@ -449,6 +441,9 @@ static int mv88e6xxx_port_setup_mac(struct mv88e6xxx_chip *chip, int port,
 			goto restore_link;
 	}
 
+	if (speed == SPEED_MAX && chip->info->ops->port_max_speed_mode)
+		mode = chip->info->ops->port_max_speed_mode(port);
+
 	if (chip->info->ops->port_set_pause) {
 		err = chip->info->ops->port_set_pause(chip, port, pause);
 		if (err)
@@ -475,12 +470,6 @@ static int mv88e6xxx_port_ppu_updates(struct mv88e6xxx_chip *chip, int port)
 	u16 reg;
 	int err;
 
-	/* The 88e6250 family does not have the PHY detect bit. Instead,
-	 * report whether the port is internal.
-	 */
-	if (chip->info->family == MV88E6XXX_FAMILY_6250)
-		return port < chip->info->num_internal_phys;
-
 	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_STS, &reg);
 	if (err) {
 		dev_err(chip->dev,
@@ -496,12 +485,12 @@ static int mv88e6xxx_serdes_pcs_get_state(struct dsa_switch *ds, int port,
 					  struct phylink_link_state *state)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
-	int lane;
+	u8 lane;
 	int err;
 
 	mv88e6xxx_reg_lock(chip);
 	lane = mv88e6xxx_serdes_get_lane(chip, port);
-	if (lane >= 0 && chip->info->ops->serdes_pcs_get_state)
+	if (lane && chip->info->ops->serdes_pcs_get_state)
 		err = chip->info->ops->serdes_pcs_get_state(chip, port, lane,
 							    state);
 	else
@@ -517,11 +506,11 @@ static int mv88e6xxx_serdes_pcs_config(struct mv88e6xxx_chip *chip, int port,
 				       const unsigned long *advertise)
 {
 	const struct mv88e6xxx_ops *ops = chip->info->ops;
-	int lane;
+	u8 lane;
 
 	if (ops->serdes_pcs_config) {
 		lane = mv88e6xxx_serdes_get_lane(chip, port);
-		if (lane >= 0)
+		if (lane)
 			return ops->serdes_pcs_config(chip, port, lane, mode,
 						      interface, advertise);
 	}
@@ -534,14 +523,14 @@ static void mv88e6xxx_serdes_pcs_an_restart(struct dsa_switch *ds, int port)
 	struct mv88e6xxx_chip *chip = ds->priv;
 	const struct mv88e6xxx_ops *ops;
 	int err = 0;
-	int lane;
+	u8 lane;
 
 	ops = chip->info->ops;
 
 	if (ops->serdes_pcs_an_restart) {
 		mv88e6xxx_reg_lock(chip);
 		lane = mv88e6xxx_serdes_get_lane(chip, port);
-		if (lane >= 0)
+		if (lane)
 			err = ops->serdes_pcs_an_restart(chip, port, lane);
 		mv88e6xxx_reg_unlock(chip);
 
@@ -555,11 +544,11 @@ static int mv88e6xxx_serdes_pcs_link_up(struct mv88e6xxx_chip *chip, int port,
 					int speed, int duplex)
 {
 	const struct mv88e6xxx_ops *ops = chip->info->ops;
-	int lane;
+	u8 lane;
 
 	if (!phylink_autoneg_inband(mode) && ops->serdes_pcs_link_up) {
 		lane = mv88e6xxx_serdes_get_lane(chip, port);
-		if (lane >= 0)
+		if (lane)
 			return ops->serdes_pcs_link_up(chip, port, lane,
 						       speed, duplex);
 	}
@@ -567,278 +556,108 @@ static int mv88e6xxx_serdes_pcs_link_up(struct mv88e6xxx_chip *chip, int port,
 	return 0;
 }
 
-static const u8 mv88e6185_phy_interface_modes[] = {
-	[MV88E6185_PORT_STS_CMODE_GMII_FD]	 = PHY_INTERFACE_MODE_GMII,
-	[MV88E6185_PORT_STS_CMODE_MII_100_FD_PS] = PHY_INTERFACE_MODE_MII,
-	[MV88E6185_PORT_STS_CMODE_MII_100]	 = PHY_INTERFACE_MODE_MII,
-	[MV88E6185_PORT_STS_CMODE_MII_10]	 = PHY_INTERFACE_MODE_MII,
-	[MV88E6185_PORT_STS_CMODE_SERDES]	 = PHY_INTERFACE_MODE_1000BASEX,
-	[MV88E6185_PORT_STS_CMODE_1000BASE_X]	 = PHY_INTERFACE_MODE_1000BASEX,
-	[MV88E6185_PORT_STS_CMODE_PHY]		 = PHY_INTERFACE_MODE_SGMII,
-};
-
-static void mv88e6095_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
+static void mv88e6065_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+				       unsigned long *mask,
+				       struct phylink_link_state *state)
 {
-	u8 cmode = chip->ports[port].cmode;
-
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100;
-
-	if (mv88e6xxx_phy_is_internal(chip->ds, port)) {
-		__set_bit(PHY_INTERFACE_MODE_MII, config->supported_interfaces);
-	} else {
-		if (cmode < ARRAY_SIZE(mv88e6185_phy_interface_modes) &&
-		    mv88e6185_phy_interface_modes[cmode])
-			__set_bit(mv88e6185_phy_interface_modes[cmode],
-				  config->supported_interfaces);
-
-		config->mac_capabilities |= MAC_1000FD;
+	if (!phy_interface_mode_is_8023z(state->interface)) {
+		/* 10M and 100M are only supported in non-802.3z mode */
+		phylink_set(mask, 10baseT_Half);
+		phylink_set(mask, 10baseT_Full);
+		phylink_set(mask, 100baseT_Half);
+		phylink_set(mask, 100baseT_Full);
 	}
 }
 
-static void mv88e6185_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
+static void mv88e6185_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+				       unsigned long *mask,
+				       struct phylink_link_state *state)
 {
-	u8 cmode = chip->ports[port].cmode;
-
-	if (cmode < ARRAY_SIZE(mv88e6185_phy_interface_modes) &&
-	    mv88e6185_phy_interface_modes[cmode])
-		__set_bit(mv88e6185_phy_interface_modes[cmode],
-			  config->supported_interfaces);
-
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100 |
-				   MAC_1000FD;
-}
-
-static const u8 mv88e6xxx_phy_interface_modes[] = {
-	[MV88E6XXX_PORT_STS_CMODE_MII_PHY]	= PHY_INTERFACE_MODE_MII,
-	[MV88E6XXX_PORT_STS_CMODE_MII]		= PHY_INTERFACE_MODE_MII,
-	[MV88E6XXX_PORT_STS_CMODE_GMII]		= PHY_INTERFACE_MODE_GMII,
-	[MV88E6XXX_PORT_STS_CMODE_RMII_PHY]	= PHY_INTERFACE_MODE_RMII,
-	[MV88E6XXX_PORT_STS_CMODE_RMII]		= PHY_INTERFACE_MODE_RMII,
-	[MV88E6XXX_PORT_STS_CMODE_100BASEX]	= PHY_INTERFACE_MODE_100BASEX,
-	[MV88E6XXX_PORT_STS_CMODE_1000BASEX]	= PHY_INTERFACE_MODE_1000BASEX,
-	[MV88E6XXX_PORT_STS_CMODE_SGMII]	= PHY_INTERFACE_MODE_SGMII,
-	/* higher interface modes are not needed here, since ports supporting
-	 * them are writable, and so the supported interfaces are filled in the
-	 * corresponding .phylink_set_interfaces() implementation below
+	/* FIXME: if the port is in 1000Base-X mode, then it only supports
+	 * 1000M FD speeds.  In this case, CMODE will indicate 5.
 	 */
-};
+	phylink_set(mask, 1000baseT_Full);
+	phylink_set(mask, 1000baseX_Full);
 
-static void mv88e6xxx_translate_cmode(u8 cmode, unsigned long *supported)
-{
-	if (cmode < ARRAY_SIZE(mv88e6xxx_phy_interface_modes) &&
-	    mv88e6xxx_phy_interface_modes[cmode])
-		__set_bit(mv88e6xxx_phy_interface_modes[cmode], supported);
-	else if (cmode == MV88E6XXX_PORT_STS_CMODE_RGMII)
-		phy_interface_set_rgmii(supported);
+	mv88e6065_phylink_validate(chip, port, mask, state);
 }
 
-static void mv88e6250_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
+static void mv88e6341_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+				       unsigned long *mask,
+				       struct phylink_link_state *state)
 {
-	unsigned long *supported = config->supported_interfaces;
-
-	/* Translate the default cmode */
-	mv88e6xxx_translate_cmode(chip->ports[port].cmode, supported);
-
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100;
-}
-
-static int mv88e6352_get_port4_serdes_cmode(struct mv88e6xxx_chip *chip)
-{
-	u16 reg, val;
-	int err;
-
-	err = mv88e6xxx_port_read(chip, 4, MV88E6XXX_PORT_STS, &reg);
-	if (err)
-		return err;
-
-	/* If PHY_DETECT is zero, then we are not in auto-media mode */
-	if (!(reg & MV88E6XXX_PORT_STS_PHY_DETECT))
-		return 0xf;
-
-	val = reg & ~MV88E6XXX_PORT_STS_PHY_DETECT;
-	err = mv88e6xxx_port_write(chip, 4, MV88E6XXX_PORT_STS, val);
-	if (err)
-		return err;
-
-	err = mv88e6xxx_port_read(chip, 4, MV88E6XXX_PORT_STS, &val);
-	if (err)
-		return err;
-
-	/* Restore PHY_DETECT value */
-	err = mv88e6xxx_port_write(chip, 4, MV88E6XXX_PORT_STS, reg);
-	if (err)
-		return err;
-
-	return val & MV88E6XXX_PORT_STS_CMODE_MASK;
-}
-
-static void mv88e6352_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
-{
-	unsigned long *supported = config->supported_interfaces;
-	int err, cmode;
-
-	/* Translate the default cmode */
-	mv88e6xxx_translate_cmode(chip->ports[port].cmode, supported);
-
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100 |
-				   MAC_1000FD;
-
-	/* Port 4 supports automedia if the serdes is associated with it. */
-	if (port == 4) {
-		err = mv88e6352_g2_scratch_port_has_serdes(chip, port);
-		if (err < 0)
-			dev_err(chip->dev, "p%d: failed to read scratch\n",
-				port);
-		if (err <= 0)
-			return;
-
-		cmode = mv88e6352_get_port4_serdes_cmode(chip);
-		if (cmode < 0)
-			dev_err(chip->dev, "p%d: failed to read serdes cmode\n",
-				port);
-		else
-			mv88e6xxx_translate_cmode(cmode, supported);
-	}
-}
-
-static void mv88e6341_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
-{
-	unsigned long *supported = config->supported_interfaces;
-
-	/* Translate the default cmode */
-	mv88e6xxx_translate_cmode(chip->ports[port].cmode, supported);
+	if (port >= 5)
+		phylink_set(mask, 2500baseX_Full);
 
 	/* No ethtool bits for 200Mbps */
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100 |
-				   MAC_1000FD;
+	phylink_set(mask, 1000baseT_Full);
+	phylink_set(mask, 1000baseX_Full);
 
-	/* The C_Mode field is programmable on port 5 */
-	if (port == 5) {
-		__set_bit(PHY_INTERFACE_MODE_SGMII, supported);
-		__set_bit(PHY_INTERFACE_MODE_1000BASEX, supported);
-		__set_bit(PHY_INTERFACE_MODE_2500BASEX, supported);
-
-		config->mac_capabilities |= MAC_2500FD;
-	}
+	mv88e6065_phylink_validate(chip, port, mask, state);
 }
 
-static void mv88e6390_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-				       struct phylink_config *config)
+static void mv88e6352_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+				       unsigned long *mask,
+				       struct phylink_link_state *state)
 {
-	unsigned long *supported = config->supported_interfaces;
+	/* No ethtool bits for 200Mbps */
+	phylink_set(mask, 1000baseT_Full);
+	phylink_set(mask, 1000baseX_Full);
 
-	/* Translate the default cmode */
-	mv88e6xxx_translate_cmode(chip->ports[port].cmode, supported);
+	mv88e6065_phylink_validate(chip, port, mask, state);
+}
+
+static void mv88e6390_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+				       unsigned long *mask,
+				       struct phylink_link_state *state)
+{
+	if (port >= 9) {
+		phylink_set(mask, 2500baseX_Full);
+		phylink_set(mask, 2500baseT_Full);
+	}
 
 	/* No ethtool bits for 200Mbps */
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100 |
-				   MAC_1000FD;
+	phylink_set(mask, 1000baseT_Full);
+	phylink_set(mask, 1000baseX_Full);
 
-	/* The C_Mode field is programmable on ports 9 and 10 */
-	if (port == 9 || port == 10) {
-		__set_bit(PHY_INTERFACE_MODE_SGMII, supported);
-		__set_bit(PHY_INTERFACE_MODE_1000BASEX, supported);
-		__set_bit(PHY_INTERFACE_MODE_2500BASEX, supported);
-
-		config->mac_capabilities |= MAC_2500FD;
-	}
+	mv88e6065_phylink_validate(chip, port, mask, state);
 }
 
-static void mv88e6390x_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-					struct phylink_config *config)
+static void mv88e6390x_phylink_validate(struct mv88e6xxx_chip *chip, int port,
+					unsigned long *mask,
+					struct phylink_link_state *state)
 {
-	unsigned long *supported = config->supported_interfaces;
-
-	mv88e6390_phylink_get_caps(chip, port, config);
-
-	/* For the 6x90X, ports 2-7 can be in automedia mode.
-	 * (Note that 6x90 doesn't support RXAUI nor XAUI).
-	 *
-	 * Port 2 can also support 1000BASE-X in automedia mode if port 9 is
-	 * configured for 1000BASE-X, SGMII or 2500BASE-X.
-	 * Port 3-4 can also support 1000BASE-X in automedia mode if port 9 is
-	 * configured for RXAUI, 1000BASE-X, SGMII or 2500BASE-X.
-	 *
-	 * Port 5 can also support 1000BASE-X in automedia mode if port 10 is
-	 * configured for 1000BASE-X, SGMII or 2500BASE-X.
-	 * Port 6-7 can also support 1000BASE-X in automedia mode if port 10 is
-	 * configured for RXAUI, 1000BASE-X, SGMII or 2500BASE-X.
-	 *
-	 * For now, be permissive (as the old code was) and allow 1000BASE-X
-	 * on ports 2..7.
-	 */
-	if (port >= 2 && port <= 7)
-		__set_bit(PHY_INTERFACE_MODE_1000BASEX, supported);
-
-	/* The C_Mode field can also be programmed for 10G speeds */
-	if (port == 9 || port == 10) {
-		__set_bit(PHY_INTERFACE_MODE_XAUI, supported);
-		__set_bit(PHY_INTERFACE_MODE_RXAUI, supported);
-
-		config->mac_capabilities |= MAC_10000FD;
+	if (port >= 9) {
+		phylink_set(mask, 10000baseT_Full);
+		phylink_set(mask, 10000baseKR_Full);
 	}
+
+	mv88e6390_phylink_validate(chip, port, mask, state);
 }
 
-static void mv88e6393x_phylink_get_caps(struct mv88e6xxx_chip *chip, int port,
-					struct phylink_config *config)
+static void mv88e6xxx_validate(struct dsa_switch *ds, int port,
+			       unsigned long *supported,
+			       struct phylink_link_state *state)
 {
-	unsigned long *supported = config->supported_interfaces;
-	bool is_6191x =
-		chip->info->prod_num == MV88E6XXX_PORT_SWITCH_ID_PROD_6191X;
-
-	mv88e6xxx_translate_cmode(chip->ports[port].cmode, supported);
-
-	config->mac_capabilities = MAC_SYM_PAUSE | MAC_10 | MAC_100 |
-				   MAC_1000FD;
-
-	/* The C_Mode field can be programmed for ports 0, 9 and 10 */
-	if (port == 0 || port == 9 || port == 10) {
-		__set_bit(PHY_INTERFACE_MODE_SGMII, supported);
-		__set_bit(PHY_INTERFACE_MODE_1000BASEX, supported);
-
-		/* 6191X supports >1G modes only on port 10 */
-		if (!is_6191x || port == 10) {
-			__set_bit(PHY_INTERFACE_MODE_2500BASEX, supported);
-			__set_bit(PHY_INTERFACE_MODE_5GBASER, supported);
-			__set_bit(PHY_INTERFACE_MODE_10GBASER, supported);
-			/* FIXME: USXGMII is not supported yet */
-			/* __set_bit(PHY_INTERFACE_MODE_USXGMII, supported); */
-
-			config->mac_capabilities |= MAC_2500FD | MAC_5000FD |
-				MAC_10000FD;
-		}
-	}
-
-	if (port == 0) {
-		__set_bit(PHY_INTERFACE_MODE_RMII, supported);
-		__set_bit(PHY_INTERFACE_MODE_RGMII, supported);
-		__set_bit(PHY_INTERFACE_MODE_RGMII_ID, supported);
-		__set_bit(PHY_INTERFACE_MODE_RGMII_RXID, supported);
-		__set_bit(PHY_INTERFACE_MODE_RGMII_TXID, supported);
-	}
-}
-
-static void mv88e6xxx_get_caps(struct dsa_switch *ds, int port,
-			       struct phylink_config *config)
-{
+	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
 	struct mv88e6xxx_chip *chip = ds->priv;
 
-	mv88e6xxx_reg_lock(chip);
-	chip->info->ops->phylink_get_caps(chip, port, config);
-	mv88e6xxx_reg_unlock(chip);
+	/* Allow all the expected bits */
+	phylink_set(mask, Autoneg);
+	phylink_set(mask, Pause);
+	phylink_set_port_modes(mask);
 
-	if (mv88e6xxx_phy_is_internal(ds, port)) {
-		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
-			  config->supported_interfaces);
-		/* Internal ports with no phy-mode need GMII for PHYLIB */
-		__set_bit(PHY_INTERFACE_MODE_GMII,
-			  config->supported_interfaces);
-	}
+	if (chip->info->ops->phylink_validate)
+		chip->info->ops->phylink_validate(chip, port, mask, state);
+
+	bitmap_and(supported, supported, mask, __ETHTOOL_LINK_MODE_MASK_NBITS);
+	bitmap_and(state->advertising, state->advertising, mask,
+		   __ETHTOOL_LINK_MODE_MASK_NBITS);
+
+	/* We can only operate at 2500BaseX or 1000BaseX.  If requested
+	 * to advertise both, only report advertising at 2500BaseX.
+	 */
+	phylink_helper_basex_speed(state);
 }
 
 static void mv88e6xxx_mac_config(struct dsa_switch *ds, int port,
@@ -911,16 +730,13 @@ static void mv88e6xxx_mac_link_down(struct dsa_switch *ds, int port,
 	ops = chip->info->ops;
 
 	mv88e6xxx_reg_lock(chip);
-	/* Force the link down if we know the port may not be automatically
-	 * updated by the switch or if we are using fixed-link mode.
+	/* Internal PHYs propagate their configuration directly to the MAC.
+	 * External PHYs depend on whether the PPU is enabled for this port.
 	 */
-	if ((!mv88e6xxx_port_ppu_updates(chip, port) ||
-	     mode == MLO_AN_FIXED) && ops->port_sync_link)
-		err = ops->port_sync_link(chip, port, mode, false);
-
-	if (!err && ops->port_set_speed_duplex)
-		err = ops->port_set_speed_duplex(chip, port, SPEED_UNFORCED,
-						 DUPLEX_UNFORCED);
+	if (((!mv88e6xxx_phy_is_internal(ds, port) &&
+	      !mv88e6xxx_port_ppu_updates(chip, port)) ||
+	     mode == MLO_AN_FIXED) && ops->port_set_link)
+		err = ops->port_set_link(chip, port, LINK_FORCED_DOWN);
 	mv88e6xxx_reg_unlock(chip);
 
 	if (err)
@@ -941,11 +757,11 @@ static void mv88e6xxx_mac_link_up(struct dsa_switch *ds, int port,
 	ops = chip->info->ops;
 
 	mv88e6xxx_reg_lock(chip);
-	/* Configure and force the link up if we know that the port may not
-	 * automatically updated by the switch or if we are using fixed-link
-	 * mode.
+	/* Internal PHYs propagate their configuration directly to the MAC.
+	 * External PHYs depend on whether the PPU is enabled for this port.
 	 */
-	if (!mv88e6xxx_port_ppu_updates(chip, port) ||
+	if ((!mv88e6xxx_phy_is_internal(ds, port) &&
+	     !mv88e6xxx_port_ppu_updates(chip, port)) ||
 	    mode == MLO_AN_FIXED) {
 		/* FIXME: for an automedia port, should we force the link
 		 * down here - what if the link comes up due to "other" media
@@ -965,8 +781,8 @@ static void mv88e6xxx_mac_link_up(struct dsa_switch *ds, int port,
 				goto error;
 		}
 
-		if (ops->port_sync_link)
-			err = ops->port_sync_link(chip, port, mode, true);
+		if (ops->port_set_link)
+			err = ops->port_set_link(chip, port, LINK_FORCED_UP);
 	}
 error:
 	mv88e6xxx_reg_unlock(chip);
@@ -1138,7 +954,7 @@ static void mv88e6xxx_atu_vtu_get_strings(uint8_t *data)
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(mv88e6xxx_atu_vtu_stats_strings); i++)
-		strscpy(data + i * ETH_GSTRING_LEN,
+		strlcpy(data + i * ETH_GSTRING_LEN,
 			mv88e6xxx_atu_vtu_stats_strings[i],
 			ETH_GSTRING_LEN);
 }
@@ -1390,39 +1206,19 @@ static u16 mv88e6xxx_port_vlan(struct mv88e6xxx_chip *chip, int dev, int port)
 {
 	struct dsa_switch *ds = chip->ds;
 	struct dsa_switch_tree *dst = ds->dst;
-	struct dsa_port *dp, *other_dp;
+	struct net_device *br;
+	struct dsa_port *dp;
 	bool found = false;
 	u16 pvlan;
 
-	/* dev is a physical switch */
-	if (dev <= dst->last_switch) {
-		list_for_each_entry(dp, &dst->ports, list) {
-			if (dp->ds->index == dev && dp->index == port) {
-				/* dp might be a DSA link or a user port, so it
-				 * might or might not have a bridge.
-				 * Use the "found" variable for both cases.
-				 */
-				found = true;
-				break;
-			}
-		}
-	/* dev is a virtual bridge */
-	} else {
-		list_for_each_entry(dp, &dst->ports, list) {
-			unsigned int bridge_num = dsa_port_bridge_num_get(dp);
-
-			if (!bridge_num)
-				continue;
-
-			if (bridge_num + dst->last_switch != dev)
-				continue;
-
+	list_for_each_entry(dp, &dst->ports, list) {
+		if (dp->ds->index == dev && dp->index == port) {
 			found = true;
 			break;
 		}
 	}
 
-	/* Prevent frames from unknown switch or virtual bridge */
+	/* Prevent frames from unknown switch or port */
 	if (!found)
 		return 0;
 
@@ -1430,23 +1226,18 @@ static u16 mv88e6xxx_port_vlan(struct mv88e6xxx_chip *chip, int dev, int port)
 	if (dp->type == DSA_PORT_TYPE_CPU || dp->type == DSA_PORT_TYPE_DSA)
 		return mv88e6xxx_port_mask(chip);
 
+	br = dp->bridge_dev;
 	pvlan = 0;
 
-	/* Frames from standalone user ports can only egress on the
-	 * upstream port.
+	/* Frames from user ports can egress any local DSA links and CPU ports,
+	 * as well as any local member of their bridge group.
 	 */
-	if (!dsa_port_bridge_dev_get(dp))
-		return BIT(dsa_switch_upstream_port(ds));
-
-	/* Frames from bridged user ports can egress any local DSA
-	 * links and CPU ports, as well as any local member of their
-	 * bridge group.
-	 */
-	dsa_switch_for_each_port(other_dp, ds)
-		if (other_dp->type == DSA_PORT_TYPE_CPU ||
-		    other_dp->type == DSA_PORT_TYPE_DSA ||
-		    dsa_port_bridge_same(dp, other_dp))
-			pvlan |= BIT(other_dp->index);
+	list_for_each_entry(dp, &dst->ports, list)
+		if (dp->ds == ds &&
+		    (dp->type == DSA_PORT_TYPE_CPU ||
+		     dp->type == DSA_PORT_TYPE_DSA ||
+		     (br && dp->bridge_dev == br)))
+			pvlan |= BIT(dp->index);
 
 	return pvlan;
 }
@@ -1569,16 +1360,9 @@ static int mv88e6xxx_atu_setup(struct mv88e6xxx_chip *chip)
 	if (err)
 		return err;
 
-	/* The chips that have a "learn2all" bit in Global1, ATU
-	 * Control are precisely those whose port registers have a
-	 * Message Port bit in Port Control 1 and hence implement
-	 * ->port_setup_message_port.
-	 */
-	if (chip->info->ops->port_setup_message_port) {
-		err = mv88e6xxx_g1_atu_set_learn2all(chip, true);
-		if (err)
-			return err;
-	}
+	err = mv88e6xxx_g1_atu_set_learn2all(chip, true);
+	if (err)
+		return err;
 
 	return mv88e6xxx_g1_atu_set_age_time(chip, 300000);
 }
@@ -1618,32 +1402,14 @@ static int mv88e6xxx_mac_setup(struct mv88e6xxx_chip *chip)
 
 static int mv88e6xxx_pvt_map(struct mv88e6xxx_chip *chip, int dev, int port)
 {
-	struct dsa_switch_tree *dst = chip->ds->dst;
-	struct dsa_switch *ds;
-	struct dsa_port *dp;
 	u16 pvlan = 0;
 
 	if (!mv88e6xxx_has_pvt(chip))
 		return 0;
 
 	/* Skip the local source device, which uses in-chip port VLAN */
-	if (dev != chip->ds->index) {
+	if (dev != chip->ds->index)
 		pvlan = mv88e6xxx_port_vlan(chip, dev, port);
-
-		ds = dsa_switch_find(dst->index, dev);
-		dp = ds ? dsa_to_port(ds, port) : NULL;
-		if (dp && dp->lag) {
-			/* As the PVT is used to limit flooding of
-			 * FORWARD frames, which use the LAG ID as the
-			 * source port, we must translate dev/port to
-			 * the special "LAG device" in the PVT, using
-			 * the LAG ID (one-based) as the port number
-			 * (zero-based).
-			 */
-			dev = MV88E6XXX_G2_PVT_ADDR_DEV_TRUNK;
-			port = dsa_port_lag_id_get(dp) - 1;
-		}
-	}
 
 	return mv88e6xxx_g2_pvt_write(chip, dev, port, pvlan);
 }
@@ -1674,89 +1440,34 @@ static int mv88e6xxx_pvt_setup(struct mv88e6xxx_chip *chip)
 	return 0;
 }
 
-static int mv88e6xxx_port_fast_age_fid(struct mv88e6xxx_chip *chip, int port,
-				       u16 fid)
-{
-	if (dsa_to_port(chip->ds, port)->lag)
-		/* Hardware is incapable of fast-aging a LAG through a
-		 * regular ATU move operation. Until we have something
-		 * more fancy in place this is a no-op.
-		 */
-		return -EOPNOTSUPP;
-
-	return mv88e6xxx_g1_atu_remove(chip, fid, port, false);
-}
-
 static void mv88e6xxx_port_fast_age(struct dsa_switch *ds, int port)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
 
 	mv88e6xxx_reg_lock(chip);
-	err = mv88e6xxx_port_fast_age_fid(chip, port, 0);
+	err = mv88e6xxx_g1_atu_remove(chip, 0, port, false);
 	mv88e6xxx_reg_unlock(chip);
 
 	if (err)
-		dev_err(chip->ds->dev, "p%d: failed to flush ATU: %d\n",
-			port, err);
+		dev_err(ds->dev, "p%d: failed to flush ATU\n", port);
 }
 
 static int mv88e6xxx_vtu_setup(struct mv88e6xxx_chip *chip)
 {
-	if (!mv88e6xxx_max_vid(chip))
+	if (!chip->info->max_vid)
 		return 0;
 
 	return mv88e6xxx_g1_vtu_flush(chip);
 }
 
-static int mv88e6xxx_vtu_get(struct mv88e6xxx_chip *chip, u16 vid,
-			     struct mv88e6xxx_vtu_entry *entry)
+static int mv88e6xxx_vtu_getnext(struct mv88e6xxx_chip *chip,
+				 struct mv88e6xxx_vtu_entry *entry)
 {
-	int err;
-
 	if (!chip->info->ops->vtu_getnext)
 		return -EOPNOTSUPP;
 
-	entry->vid = vid ? vid - 1 : mv88e6xxx_max_vid(chip);
-	entry->valid = false;
-
-	err = chip->info->ops->vtu_getnext(chip, entry);
-
-	if (entry->vid != vid)
-		entry->valid = false;
-
-	return err;
-}
-
-static int mv88e6xxx_vtu_walk(struct mv88e6xxx_chip *chip,
-			      int (*cb)(struct mv88e6xxx_chip *chip,
-					const struct mv88e6xxx_vtu_entry *entry,
-					void *priv),
-			      void *priv)
-{
-	struct mv88e6xxx_vtu_entry entry = {
-		.vid = mv88e6xxx_max_vid(chip),
-		.valid = false,
-	};
-	int err;
-
-	if (!chip->info->ops->vtu_getnext)
-		return -EOPNOTSUPP;
-
-	do {
-		err = chip->info->ops->vtu_getnext(chip, &entry);
-		if (err)
-			return err;
-
-		if (!entry.valid)
-			break;
-
-		err = cb(chip, &entry, priv);
-		if (err)
-			return err;
-	} while (entry.vid < mv88e6xxx_max_vid(chip));
-
-	return 0;
+	return chip->info->ops->vtu_getnext(chip, entry);
 }
 
 static int mv88e6xxx_vtu_loadpurge(struct mv88e6xxx_chip *chip,
@@ -1768,24 +1479,39 @@ static int mv88e6xxx_vtu_loadpurge(struct mv88e6xxx_chip *chip,
 	return chip->info->ops->vtu_loadpurge(chip, entry);
 }
 
-static int mv88e6xxx_fid_map_vlan(struct mv88e6xxx_chip *chip,
-				  const struct mv88e6xxx_vtu_entry *entry,
-				  void *_fid_bitmap)
-{
-	unsigned long *fid_bitmap = _fid_bitmap;
-
-	set_bit(entry->fid, fid_bitmap);
-	return 0;
-}
-
 int mv88e6xxx_fid_map(struct mv88e6xxx_chip *chip, unsigned long *fid_bitmap)
 {
+	struct mv88e6xxx_vtu_entry vlan;
+	int i, err;
+	u16 fid;
+
 	bitmap_zero(fid_bitmap, MV88E6XXX_N_FID);
 
-	/* Every FID has an associated VID, so walking the VTU
-	 * will discover the full set of FIDs in use.
-	 */
-	return mv88e6xxx_vtu_walk(chip, mv88e6xxx_fid_map_vlan, fid_bitmap);
+	/* Set every FID bit used by the (un)bridged ports */
+	for (i = 0; i < mv88e6xxx_num_ports(chip); ++i) {
+		err = mv88e6xxx_port_get_fid(chip, i, &fid);
+		if (err)
+			return err;
+
+		set_bit(fid, fid_bitmap);
+	}
+
+	/* Set every FID bit used by the VLAN entries */
+	vlan.vid = chip->info->max_vid;
+	vlan.valid = false;
+
+	do {
+		err = mv88e6xxx_vtu_getnext(chip, &vlan);
+		if (err)
+			return err;
+
+		if (!vlan.valid)
+			break;
+
+		set_bit(vlan.fid, fid_bitmap);
+	} while (vlan.vid < chip->info->max_vid);
+
+	return 0;
 }
 
 static int mv88e6xxx_atu_new(struct mv88e6xxx_chip *chip, u16 *fid)
@@ -1797,7 +1523,10 @@ static int mv88e6xxx_atu_new(struct mv88e6xxx_chip *chip, u16 *fid)
 	if (err)
 		return err;
 
-	*fid = find_first_zero_bit(fid_bitmap, MV88E6XXX_N_FID);
+	/* The reset value 0x000 is used to indicate that multiple address
+	 * databases are not needed. Return the next positive available.
+	 */
+	*fid = find_next_zero_bit(fid_bitmap, MV88E6XXX_N_FID, 1);
 	if (unlikely(*fid >= mv88e6xxx_num_databases(chip)))
 		return -ENOSPC;
 
@@ -1805,276 +1534,76 @@ static int mv88e6xxx_atu_new(struct mv88e6xxx_chip *chip, u16 *fid)
 	return mv88e6xxx_g1_atu_flush(chip, *fid, true);
 }
 
-static int mv88e6xxx_stu_loadpurge(struct mv88e6xxx_chip *chip,
-				   struct mv88e6xxx_stu_entry *entry)
-{
-	if (!chip->info->ops->stu_loadpurge)
-		return -EOPNOTSUPP;
-
-	return chip->info->ops->stu_loadpurge(chip, entry);
-}
-
-static int mv88e6xxx_stu_setup(struct mv88e6xxx_chip *chip)
-{
-	struct mv88e6xxx_stu_entry stu = {
-		.valid = true,
-		.sid = 0
-	};
-
-	if (!mv88e6xxx_has_stu(chip))
-		return 0;
-
-	/* Make sure that SID 0 is always valid. This is used by VTU
-	 * entries that do not make use of the STU, e.g. when creating
-	 * a VLAN upper on a port that is also part of a VLAN
-	 * filtering bridge.
-	 */
-	return mv88e6xxx_stu_loadpurge(chip, &stu);
-}
-
-static int mv88e6xxx_sid_get(struct mv88e6xxx_chip *chip, u8 *sid)
-{
-	DECLARE_BITMAP(busy, MV88E6XXX_N_SID) = { 0 };
-	struct mv88e6xxx_mst *mst;
-
-	__set_bit(0, busy);
-
-	list_for_each_entry(mst, &chip->msts, node)
-		__set_bit(mst->stu.sid, busy);
-
-	*sid = find_first_zero_bit(busy, MV88E6XXX_N_SID);
-
-	return (*sid >= mv88e6xxx_max_sid(chip)) ? -ENOSPC : 0;
-}
-
-static int mv88e6xxx_mst_put(struct mv88e6xxx_chip *chip, u8 sid)
-{
-	struct mv88e6xxx_mst *mst, *tmp;
-	int err;
-
-	if (!sid)
-		return 0;
-
-	list_for_each_entry_safe(mst, tmp, &chip->msts, node) {
-		if (mst->stu.sid != sid)
-			continue;
-
-		if (!refcount_dec_and_test(&mst->refcnt))
-			return 0;
-
-		mst->stu.valid = false;
-		err = mv88e6xxx_stu_loadpurge(chip, &mst->stu);
-		if (err) {
-			refcount_set(&mst->refcnt, 1);
-			return err;
-		}
-
-		list_del(&mst->node);
-		kfree(mst);
-		return 0;
-	}
-
-	return -ENOENT;
-}
-
-static int mv88e6xxx_mst_get(struct mv88e6xxx_chip *chip, struct net_device *br,
-			     u16 msti, u8 *sid)
-{
-	struct mv88e6xxx_mst *mst;
-	int err, i;
-
-	if (!mv88e6xxx_has_stu(chip)) {
-		err = -EOPNOTSUPP;
-		goto err;
-	}
-
-	if (!msti) {
-		*sid = 0;
-		return 0;
-	}
-
-	list_for_each_entry(mst, &chip->msts, node) {
-		if (mst->br == br && mst->msti == msti) {
-			refcount_inc(&mst->refcnt);
-			*sid = mst->stu.sid;
-			return 0;
-		}
-	}
-
-	err = mv88e6xxx_sid_get(chip, sid);
-	if (err)
-		goto err;
-
-	mst = kzalloc(sizeof(*mst), GFP_KERNEL);
-	if (!mst) {
-		err = -ENOMEM;
-		goto err;
-	}
-
-	INIT_LIST_HEAD(&mst->node);
-	refcount_set(&mst->refcnt, 1);
-	mst->br = br;
-	mst->msti = msti;
-	mst->stu.valid = true;
-	mst->stu.sid = *sid;
-
-	/* The bridge starts out all ports in the disabled state. But
-	 * a STU state of disabled means to go by the port-global
-	 * state. So we set all user port's initial state to blocking,
-	 * to match the bridge's behavior.
-	 */
-	for (i = 0; i < mv88e6xxx_num_ports(chip); i++)
-		mst->stu.state[i] = dsa_is_user_port(chip->ds, i) ?
-			MV88E6XXX_PORT_CTL0_STATE_BLOCKING :
-			MV88E6XXX_PORT_CTL0_STATE_DISABLED;
-
-	err = mv88e6xxx_stu_loadpurge(chip, &mst->stu);
-	if (err)
-		goto err_free;
-
-	list_add_tail(&mst->node, &chip->msts);
-	return 0;
-
-err_free:
-	kfree(mst);
-err:
-	return err;
-}
-
-static int mv88e6xxx_port_mst_state_set(struct dsa_switch *ds, int port,
-					const struct switchdev_mst_state *st)
-{
-	struct dsa_port *dp = dsa_to_port(ds, port);
-	struct mv88e6xxx_chip *chip = ds->priv;
-	struct mv88e6xxx_mst *mst;
-	u8 state;
-	int err;
-
-	if (!mv88e6xxx_has_stu(chip))
-		return -EOPNOTSUPP;
-
-	switch (st->state) {
-	case BR_STATE_DISABLED:
-	case BR_STATE_BLOCKING:
-	case BR_STATE_LISTENING:
-		state = MV88E6XXX_PORT_CTL0_STATE_BLOCKING;
-		break;
-	case BR_STATE_LEARNING:
-		state = MV88E6XXX_PORT_CTL0_STATE_LEARNING;
-		break;
-	case BR_STATE_FORWARDING:
-		state = MV88E6XXX_PORT_CTL0_STATE_FORWARDING;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	list_for_each_entry(mst, &chip->msts, node) {
-		if (mst->br == dsa_port_bridge_dev_get(dp) &&
-		    mst->msti == st->msti) {
-			if (mst->stu.state[port] == state)
-				return 0;
-
-			mst->stu.state[port] = state;
-			mv88e6xxx_reg_lock(chip);
-			err = mv88e6xxx_stu_loadpurge(chip, &mst->stu);
-			mv88e6xxx_reg_unlock(chip);
-			return err;
-		}
-	}
-
-	return -ENOENT;
-}
-
 static int mv88e6xxx_port_check_hw_vlan(struct dsa_switch *ds, int port,
-					u16 vid)
+					u16 vid_begin, u16 vid_end)
 {
-	struct dsa_port *dp = dsa_to_port(ds, port), *other_dp;
 	struct mv88e6xxx_chip *chip = ds->priv;
 	struct mv88e6xxx_vtu_entry vlan;
-	int err;
+	int i, err;
 
 	/* DSA and CPU ports have to be members of multiple vlans */
-	if (dsa_port_is_dsa(dp) || dsa_port_is_cpu(dp))
+	if (dsa_is_dsa_port(ds, port) || dsa_is_cpu_port(ds, port))
 		return 0;
 
-	err = mv88e6xxx_vtu_get(chip, vid, &vlan);
-	if (err)
-		return err;
-
-	if (!vlan.valid)
-		return 0;
-
-	dsa_switch_for_each_user_port(other_dp, ds) {
-		struct net_device *other_br;
-
-		if (vlan.member[other_dp->index] ==
-		    MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_NON_MEMBER)
-			continue;
-
-		if (dsa_port_bridge_same(dp, other_dp))
-			break; /* same bridge, check next VLAN */
-
-		other_br = dsa_port_bridge_dev_get(other_dp);
-		if (!other_br)
-			continue;
-
-		dev_err(ds->dev, "p%d: hw VLAN %d already used by port %d in %s\n",
-			port, vlan.vid, other_dp->index, netdev_name(other_br));
+	if (!vid_begin)
 		return -EOPNOTSUPP;
-	}
+
+	vlan.vid = vid_begin - 1;
+	vlan.valid = false;
+
+	do {
+		err = mv88e6xxx_vtu_getnext(chip, &vlan);
+		if (err)
+			return err;
+
+		if (!vlan.valid)
+			break;
+
+		if (vlan.vid > vid_end)
+			break;
+
+		for (i = 0; i < mv88e6xxx_num_ports(chip); ++i) {
+			if (dsa_is_dsa_port(ds, i) || dsa_is_cpu_port(ds, i))
+				continue;
+
+			if (!dsa_to_port(ds, i)->slave)
+				continue;
+
+			if (vlan.member[i] ==
+			    MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_NON_MEMBER)
+				continue;
+
+			if (dsa_to_port(ds, i)->bridge_dev ==
+			    dsa_to_port(ds, port)->bridge_dev)
+				break; /* same bridge, check next VLAN */
+
+			if (!dsa_to_port(ds, i)->bridge_dev)
+				continue;
+
+			dev_err(ds->dev, "p%d: hw VLAN %d already used by port %d in %s\n",
+				port, vlan.vid, i,
+				netdev_name(dsa_to_port(ds, i)->bridge_dev));
+			return -EOPNOTSUPP;
+		}
+	} while (vlan.vid < vid_end);
 
 	return 0;
-}
-
-static int mv88e6xxx_port_commit_pvid(struct mv88e6xxx_chip *chip, int port)
-{
-	struct dsa_port *dp = dsa_to_port(chip->ds, port);
-	struct net_device *br = dsa_port_bridge_dev_get(dp);
-	struct mv88e6xxx_port *p = &chip->ports[port];
-	u16 pvid = MV88E6XXX_VID_STANDALONE;
-	bool drop_untagged = false;
-	int err;
-
-	if (br) {
-		if (br_vlan_enabled(br)) {
-			pvid = p->bridge_pvid.vid;
-			drop_untagged = !p->bridge_pvid.valid;
-		} else {
-			pvid = MV88E6XXX_VID_BRIDGED;
-		}
-	}
-
-	err = mv88e6xxx_port_set_pvid(chip, port, pvid);
-	if (err)
-		return err;
-
-	return mv88e6xxx_port_drop_untagged(chip, port, drop_untagged);
 }
 
 static int mv88e6xxx_port_vlan_filtering(struct dsa_switch *ds, int port,
 					 bool vlan_filtering,
-					 struct netlink_ext_ack *extack)
+					 struct switchdev_trans *trans)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	u16 mode = vlan_filtering ? MV88E6XXX_PORT_CTL2_8021Q_MODE_SECURE :
 		MV88E6XXX_PORT_CTL2_8021Q_MODE_DISABLED;
 	int err;
 
-	if (!mv88e6xxx_max_vid(chip))
-		return -EOPNOTSUPP;
+	if (switchdev_trans_ph_prepare(trans))
+		return chip->info->max_vid ? 0 : -EOPNOTSUPP;
 
 	mv88e6xxx_reg_lock(chip);
-
 	err = mv88e6xxx_port_set_8021q_mode(chip, port, mode);
-	if (err)
-		goto unlock;
-
-	err = mv88e6xxx_port_commit_pvid(chip, port);
-	if (err)
-		goto unlock;
-
-unlock:
 	mv88e6xxx_reg_unlock(chip);
 
 	return err;
@@ -2087,16 +1616,20 @@ mv88e6xxx_port_vlan_prepare(struct dsa_switch *ds, int port,
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
 
-	if (!mv88e6xxx_max_vid(chip))
+	if (!chip->info->max_vid)
 		return -EOPNOTSUPP;
 
 	/* If the requested port doesn't belong to the same bridge as the VLAN
 	 * members, do not support it (yet) and fallback to software VLAN.
 	 */
 	mv88e6xxx_reg_lock(chip);
-	err = mv88e6xxx_port_check_hw_vlan(ds, port, vlan->vid);
+	err = mv88e6xxx_port_check_hw_vlan(ds, port, vlan->vid_begin,
+					   vlan->vid_end);
 	mv88e6xxx_reg_unlock(chip);
 
+	/* We don't need any dynamic resource from the kernel (yet),
+	 * so skip the prepare phase.
+	 */
 	return err;
 }
 
@@ -2109,22 +1642,21 @@ static int mv88e6xxx_port_db_load_purge(struct mv88e6xxx_chip *chip, int port,
 	u16 fid;
 	int err;
 
-	/* Ports have two private address databases: one for when the port is
-	 * standalone and one for when the port is under a bridge and the
-	 * 802.1Q mode is disabled. When the port is standalone, DSA wants its
-	 * address database to remain 100% empty, so we never load an ATU entry
-	 * into a standalone port's database. Therefore, translate the null
-	 * VLAN ID into the port's database used for VLAN-unaware bridging.
-	 */
+	/* Null VLAN ID corresponds to the port private database */
 	if (vid == 0) {
-		fid = MV88E6XXX_FID_BRIDGED;
+		err = mv88e6xxx_port_get_fid(chip, port, &fid);
+		if (err)
+			return err;
 	} else {
-		err = mv88e6xxx_vtu_get(chip, vid, &vlan);
+		vlan.vid = vid - 1;
+		vlan.valid = false;
+
+		err = mv88e6xxx_vtu_getnext(chip, &vlan);
 		if (err)
 			return err;
 
 		/* switchdev expects -EOPNOTSUPP to honor software VLANs */
-		if (!vlan.valid)
+		if (vlan.vid != vid || !vlan.valid)
 			return -EOPNOTSUPP;
 
 		fid = vlan.fid;
@@ -2374,10 +1906,8 @@ static int mv88e6xxx_set_rxnfc(struct dsa_switch *ds, int port,
 static int mv88e6xxx_port_add_broadcast(struct mv88e6xxx_chip *chip, int port,
 					u16 vid)
 {
+	const char broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 	u8 state = MV88E6XXX_G1_ATU_DATA_STATE_MC_STATIC;
-	u8 broadcast[ETH_ALEN];
-
-	eth_broadcast_addr(broadcast);
 
 	return mv88e6xxx_port_db_load_purge(chip, port, broadcast, vid, state);
 }
@@ -2388,72 +1918,12 @@ static int mv88e6xxx_broadcast_setup(struct mv88e6xxx_chip *chip, u16 vid)
 	int err;
 
 	for (port = 0; port < mv88e6xxx_num_ports(chip); port++) {
-		struct dsa_port *dp = dsa_to_port(chip->ds, port);
-		struct net_device *brport;
-
-		if (dsa_is_unused_port(chip->ds, port))
-			continue;
-
-		brport = dsa_port_to_bridge_port(dp);
-		if (brport && !br_port_flag_is_set(brport, BR_BCAST_FLOOD))
-			/* Skip bridged user ports where broadcast
-			 * flooding is disabled.
-			 */
-			continue;
-
 		err = mv88e6xxx_port_add_broadcast(chip, port, vid);
 		if (err)
 			return err;
 	}
 
 	return 0;
-}
-
-struct mv88e6xxx_port_broadcast_sync_ctx {
-	int port;
-	bool flood;
-};
-
-static int
-mv88e6xxx_port_broadcast_sync_vlan(struct mv88e6xxx_chip *chip,
-				   const struct mv88e6xxx_vtu_entry *vlan,
-				   void *_ctx)
-{
-	struct mv88e6xxx_port_broadcast_sync_ctx *ctx = _ctx;
-	u8 broadcast[ETH_ALEN];
-	u8 state;
-
-	if (ctx->flood)
-		state = MV88E6XXX_G1_ATU_DATA_STATE_MC_STATIC;
-	else
-		state = MV88E6XXX_G1_ATU_DATA_STATE_MC_UNUSED;
-
-	eth_broadcast_addr(broadcast);
-
-	return mv88e6xxx_port_db_load_purge(chip, ctx->port, broadcast,
-					    vlan->vid, state);
-}
-
-static int mv88e6xxx_port_broadcast_sync(struct mv88e6xxx_chip *chip, int port,
-					 bool flood)
-{
-	struct mv88e6xxx_port_broadcast_sync_ctx ctx = {
-		.port = port,
-		.flood = flood,
-	};
-	struct mv88e6xxx_vtu_entry vid0 = {
-		.vid = 0,
-	};
-	int err;
-
-	/* Update the port's private database... */
-	err = mv88e6xxx_port_broadcast_sync_vlan(chip, &vid0, &ctx);
-	if (err)
-		return err;
-
-	/* ...and the database for all VLANs. */
-	return mv88e6xxx_vtu_walk(chip, mv88e6xxx_port_broadcast_sync_vlan,
-				  &ctx);
 }
 
 static int mv88e6xxx_port_vlan_join(struct mv88e6xxx_chip *chip, int port,
@@ -2463,15 +1933,18 @@ static int mv88e6xxx_port_vlan_join(struct mv88e6xxx_chip *chip, int port,
 	struct mv88e6xxx_vtu_entry vlan;
 	int i, err;
 
-	err = mv88e6xxx_vtu_get(chip, vid, &vlan);
+	if (!vid)
+		return -EOPNOTSUPP;
+
+	vlan.vid = vid - 1;
+	vlan.valid = false;
+
+	err = mv88e6xxx_vtu_getnext(chip, &vlan);
 	if (err)
 		return err;
 
-	if (!vlan.valid) {
+	if (vlan.vid != vid || !vlan.valid) {
 		memset(&vlan, 0, sizeof(vlan));
-
-		if (vid == MV88E6XXX_VID_STANDALONE)
-			vlan.policy = true;
 
 		err = mv88e6xxx_atu_new(chip, &vlan.fid);
 		if (err)
@@ -2507,24 +1980,18 @@ static int mv88e6xxx_port_vlan_join(struct mv88e6xxx_chip *chip, int port,
 	return 0;
 }
 
-static int mv88e6xxx_port_vlan_add(struct dsa_switch *ds, int port,
-				   const struct switchdev_obj_port_vlan *vlan,
-				   struct netlink_ext_ack *extack)
+static void mv88e6xxx_port_vlan_add(struct dsa_switch *ds, int port,
+				    const struct switchdev_obj_port_vlan *vlan)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	bool untagged = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
 	bool pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
-	struct mv88e6xxx_port *p = &chip->ports[port];
 	bool warn;
 	u8 member;
-	int err;
+	u16 vid;
 
-	if (!vlan->vid)
-		return 0;
-
-	err = mv88e6xxx_port_vlan_prepare(ds, port, vlan);
-	if (err)
-		return err;
+	if (!chip->info->max_vid)
+		return;
 
 	if (dsa_is_dsa_port(ds, port) || dsa_is_cpu_port(ds, port))
 		member = MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_UNMODIFIED;
@@ -2540,33 +2007,16 @@ static int mv88e6xxx_port_vlan_add(struct dsa_switch *ds, int port,
 
 	mv88e6xxx_reg_lock(chip);
 
-	err = mv88e6xxx_port_vlan_join(chip, port, vlan->vid, member, warn);
-	if (err) {
-		dev_err(ds->dev, "p%d: failed to add VLAN %d%c\n", port,
-			vlan->vid, untagged ? 'u' : 't');
-		goto out;
-	}
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid)
+		if (mv88e6xxx_port_vlan_join(chip, port, vid, member, warn))
+			dev_err(ds->dev, "p%d: failed to add VLAN %d%c\n", port,
+				vid, untagged ? 'u' : 't');
 
-	if (pvid) {
-		p->bridge_pvid.vid = vlan->vid;
-		p->bridge_pvid.valid = true;
+	if (pvid && mv88e6xxx_port_set_pvid(chip, port, vlan->vid_end))
+		dev_err(ds->dev, "p%d: failed to set PVID %d\n", port,
+			vlan->vid_end);
 
-		err = mv88e6xxx_port_commit_pvid(chip, port);
-		if (err)
-			goto out;
-	} else if (vlan->vid && p->bridge_pvid.vid == vlan->vid) {
-		/* The old pvid was reinstalled as a non-pvid VLAN */
-		p->bridge_pvid.valid = false;
-
-		err = mv88e6xxx_port_commit_pvid(chip, port);
-		if (err)
-			goto out;
-	}
-
-out:
 	mv88e6xxx_reg_unlock(chip);
-
-	return err;
 }
 
 static int mv88e6xxx_port_vlan_leave(struct mv88e6xxx_chip *chip,
@@ -2576,16 +2026,19 @@ static int mv88e6xxx_port_vlan_leave(struct mv88e6xxx_chip *chip,
 	int i, err;
 
 	if (!vid)
-		return 0;
+		return -EOPNOTSUPP;
 
-	err = mv88e6xxx_vtu_get(chip, vid, &vlan);
+	vlan.vid = vid - 1;
+	vlan.valid = false;
+
+	err = mv88e6xxx_vtu_getnext(chip, &vlan);
 	if (err)
 		return err;
 
 	/* If the VLAN doesn't exist in hardware or the port isn't a member,
 	 * tell switchdev that this VLAN is likely handled in software.
 	 */
-	if (!vlan.valid ||
+	if (vlan.vid != vid || !vlan.valid ||
 	    vlan.member[port] == MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_NON_MEMBER)
 		return -EOPNOTSUPP;
 
@@ -2605,12 +2058,6 @@ static int mv88e6xxx_port_vlan_leave(struct mv88e6xxx_chip *chip,
 	if (err)
 		return err;
 
-	if (!vlan.valid) {
-		err = mv88e6xxx_mst_put(chip, vlan.sid);
-		if (err)
-			return err;
-	}
-
 	return mv88e6xxx_g1_atu_remove(chip, vlan.fid, port, false);
 }
 
@@ -2618,19 +2065,11 @@ static int mv88e6xxx_port_vlan_del(struct dsa_switch *ds, int port,
 				   const struct switchdev_obj_port_vlan *vlan)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
-	struct mv88e6xxx_port *p = &chip->ports[port];
+	u16 pvid, vid;
 	int err = 0;
-	u16 pvid;
 
-	if (!mv88e6xxx_max_vid(chip))
+	if (!chip->info->max_vid)
 		return -EOPNOTSUPP;
-
-	/* The ATU removal procedure needs the FID to be mapped in the VTU,
-	 * but FDB deletion runs concurrently with VLAN deletion. Flush the DSA
-	 * switchdev workqueue to ensure that all FDB entries are deleted
-	 * before we remove the VLAN.
-	 */
-	dsa_flush_workqueue();
 
 	mv88e6xxx_reg_lock(chip);
 
@@ -2638,93 +2077,26 @@ static int mv88e6xxx_port_vlan_del(struct dsa_switch *ds, int port,
 	if (err)
 		goto unlock;
 
-	err = mv88e6xxx_port_vlan_leave(chip, port, vlan->vid);
-	if (err)
-		goto unlock;
-
-	if (vlan->vid == pvid) {
-		p->bridge_pvid.valid = false;
-
-		err = mv88e6xxx_port_commit_pvid(chip, port);
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid) {
+		err = mv88e6xxx_port_vlan_leave(chip, port, vid);
 		if (err)
 			goto unlock;
-	}
 
-unlock:
-	mv88e6xxx_reg_unlock(chip);
-
-	return err;
-}
-
-static int mv88e6xxx_port_vlan_fast_age(struct dsa_switch *ds, int port, u16 vid)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	struct mv88e6xxx_vtu_entry vlan;
-	int err;
-
-	mv88e6xxx_reg_lock(chip);
-
-	err = mv88e6xxx_vtu_get(chip, vid, &vlan);
-	if (err)
-		goto unlock;
-
-	err = mv88e6xxx_port_fast_age_fid(chip, port, vlan.fid);
-
-unlock:
-	mv88e6xxx_reg_unlock(chip);
-
-	return err;
-}
-
-static int mv88e6xxx_vlan_msti_set(struct dsa_switch *ds,
-				   struct dsa_bridge bridge,
-				   const struct switchdev_vlan_msti *msti)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	struct mv88e6xxx_vtu_entry vlan;
-	u8 old_sid, new_sid;
-	int err;
-
-	if (!mv88e6xxx_has_stu(chip))
-		return -EOPNOTSUPP;
-
-	mv88e6xxx_reg_lock(chip);
-
-	err = mv88e6xxx_vtu_get(chip, msti->vid, &vlan);
-	if (err)
-		goto unlock;
-
-	if (!vlan.valid) {
-		err = -EINVAL;
-		goto unlock;
-	}
-
-	old_sid = vlan.sid;
-
-	err = mv88e6xxx_mst_get(chip, bridge.dev, msti->msti, &new_sid);
-	if (err)
-		goto unlock;
-
-	if (new_sid != old_sid) {
-		vlan.sid = new_sid;
-
-		err = mv88e6xxx_vtu_loadpurge(chip, &vlan);
-		if (err) {
-			mv88e6xxx_mst_put(chip, new_sid);
-			goto unlock;
+		if (vid == pvid) {
+			err = mv88e6xxx_port_set_pvid(chip, port, 0);
+			if (err)
+				goto unlock;
 		}
 	}
 
-	err = mv88e6xxx_mst_put(chip, old_sid);
-
 unlock:
 	mv88e6xxx_reg_unlock(chip);
+
 	return err;
 }
 
 static int mv88e6xxx_port_fdb_add(struct dsa_switch *ds, int port,
-				  const unsigned char *addr, u16 vid,
-				  struct dsa_db db)
+				  const unsigned char *addr, u16 vid)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
@@ -2738,8 +2110,7 @@ static int mv88e6xxx_port_fdb_add(struct dsa_switch *ds, int port,
 }
 
 static int mv88e6xxx_port_fdb_del(struct dsa_switch *ds, int port,
-				  const unsigned char *addr, u16 vid,
-				  struct dsa_db db)
+				  const unsigned char *addr, u16 vid)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
@@ -2786,30 +2157,10 @@ static int mv88e6xxx_port_db_dump_fid(struct mv88e6xxx_chip *chip,
 	return err;
 }
 
-struct mv88e6xxx_port_db_dump_vlan_ctx {
-	int port;
-	dsa_fdb_dump_cb_t *cb;
-	void *data;
-};
-
-static int mv88e6xxx_port_db_dump_vlan(struct mv88e6xxx_chip *chip,
-				       const struct mv88e6xxx_vtu_entry *entry,
-				       void *_data)
-{
-	struct mv88e6xxx_port_db_dump_vlan_ctx *ctx = _data;
-
-	return mv88e6xxx_port_db_dump_fid(chip, entry->fid, entry->vid,
-					  ctx->port, ctx->cb, ctx->data);
-}
-
 static int mv88e6xxx_port_db_dump(struct mv88e6xxx_chip *chip, int port,
 				  dsa_fdb_dump_cb_t *cb, void *data)
 {
-	struct mv88e6xxx_port_db_dump_vlan_ctx ctx = {
-		.port = port,
-		.cb = cb,
-		.data = data,
-	};
+	struct mv88e6xxx_vtu_entry vlan;
 	u16 fid;
 	int err;
 
@@ -2822,7 +2173,25 @@ static int mv88e6xxx_port_db_dump(struct mv88e6xxx_chip *chip, int port,
 	if (err)
 		return err;
 
-	return mv88e6xxx_vtu_walk(chip, mv88e6xxx_port_db_dump_vlan, &ctx);
+	/* Dump VLANs' Filtering Information Databases */
+	vlan.vid = chip->info->max_vid;
+	vlan.valid = false;
+
+	do {
+		err = mv88e6xxx_vtu_getnext(chip, &vlan);
+		if (err)
+			return err;
+
+		if (!vlan.valid)
+			break;
+
+		err = mv88e6xxx_port_db_dump_fid(chip, vlan.fid, vlan.vid, port,
+						 cb, data);
+		if (err)
+			return err;
+	} while (vlan.vid < chip->info->max_vid);
+
+	return err;
 }
 
 static int mv88e6xxx_port_fdb_dump(struct dsa_switch *ds, int port,
@@ -2839,7 +2208,7 @@ static int mv88e6xxx_port_fdb_dump(struct dsa_switch *ds, int port,
 }
 
 static int mv88e6xxx_bridge_map(struct mv88e6xxx_chip *chip,
-				struct dsa_bridge bridge)
+				struct net_device *br)
 {
 	struct dsa_switch *ds = chip->ds;
 	struct dsa_switch_tree *dst = ds->dst;
@@ -2847,7 +2216,7 @@ static int mv88e6xxx_bridge_map(struct mv88e6xxx_chip *chip,
 	int err;
 
 	list_for_each_entry(dp, &dst->ports, list) {
-		if (dsa_port_offloads_bridge(dp, &bridge)) {
+		if (dp->bridge_dev == br) {
 			if (dp->ds == ds) {
 				/* This is a local bridge group member,
 				 * remap its Port VLAN Map.
@@ -2870,90 +2239,34 @@ static int mv88e6xxx_bridge_map(struct mv88e6xxx_chip *chip,
 	return 0;
 }
 
-/* Treat the software bridge as a virtual single-port switch behind the
- * CPU and map in the PVT. First dst->last_switch elements are taken by
- * physical switches, so start from beyond that range.
- */
-static int mv88e6xxx_map_virtual_bridge_to_pvt(struct dsa_switch *ds,
-					       unsigned int bridge_num)
-{
-	u8 dev = bridge_num + ds->dst->last_switch;
-	struct mv88e6xxx_chip *chip = ds->priv;
-
-	return mv88e6xxx_pvt_map(chip, dev, 0);
-}
-
 static int mv88e6xxx_port_bridge_join(struct dsa_switch *ds, int port,
-				      struct dsa_bridge bridge,
-				      bool *tx_fwd_offload,
-				      struct netlink_ext_ack *extack)
+				      struct net_device *br)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
 
 	mv88e6xxx_reg_lock(chip);
-
-	err = mv88e6xxx_bridge_map(chip, bridge);
-	if (err)
-		goto unlock;
-
-	err = mv88e6xxx_port_set_map_da(chip, port, true);
-	if (err)
-		goto unlock;
-
-	err = mv88e6xxx_port_commit_pvid(chip, port);
-	if (err)
-		goto unlock;
-
-	if (mv88e6xxx_has_pvt(chip)) {
-		err = mv88e6xxx_map_virtual_bridge_to_pvt(ds, bridge.num);
-		if (err)
-			goto unlock;
-
-		*tx_fwd_offload = true;
-	}
-
-unlock:
+	err = mv88e6xxx_bridge_map(chip, br);
 	mv88e6xxx_reg_unlock(chip);
 
 	return err;
 }
 
 static void mv88e6xxx_port_bridge_leave(struct dsa_switch *ds, int port,
-					struct dsa_bridge bridge)
+					struct net_device *br)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
 
 	mv88e6xxx_reg_lock(chip);
-
-	if (bridge.tx_fwd_offload &&
-	    mv88e6xxx_map_virtual_bridge_to_pvt(ds, bridge.num))
-		dev_err(ds->dev, "failed to remap cross-chip Port VLAN\n");
-
-	if (mv88e6xxx_bridge_map(chip, bridge) ||
+	if (mv88e6xxx_bridge_map(chip, br) ||
 	    mv88e6xxx_port_vlan_map(chip, port))
 		dev_err(ds->dev, "failed to remap in-chip Port VLAN\n");
-
-	err = mv88e6xxx_port_set_map_da(chip, port, false);
-	if (err)
-		dev_err(ds->dev,
-			"port %d failed to restore map-DA: %pe\n",
-			port, ERR_PTR(err));
-
-	err = mv88e6xxx_port_commit_pvid(chip, port);
-	if (err)
-		dev_err(ds->dev,
-			"port %d failed to restore standalone pvid: %pe\n",
-			port, ERR_PTR(err));
-
 	mv88e6xxx_reg_unlock(chip);
 }
 
 static int mv88e6xxx_crosschip_bridge_join(struct dsa_switch *ds,
 					   int tree_index, int sw_index,
-					   int port, struct dsa_bridge bridge,
-					   struct netlink_ext_ack *extack)
+					   int port, struct net_device *br)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
@@ -2963,7 +2276,6 @@ static int mv88e6xxx_crosschip_bridge_join(struct dsa_switch *ds,
 
 	mv88e6xxx_reg_lock(chip);
 	err = mv88e6xxx_pvt_map(chip, sw_index, port);
-	err = err ? : mv88e6xxx_map_virtual_bridge_to_pvt(ds, bridge.num);
 	mv88e6xxx_reg_unlock(chip);
 
 	return err;
@@ -2971,7 +2283,7 @@ static int mv88e6xxx_crosschip_bridge_join(struct dsa_switch *ds,
 
 static void mv88e6xxx_crosschip_bridge_leave(struct dsa_switch *ds,
 					     int tree_index, int sw_index,
-					     int port, struct dsa_bridge bridge)
+					     int port, struct net_device *br)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 
@@ -2979,8 +2291,7 @@ static void mv88e6xxx_crosschip_bridge_leave(struct dsa_switch *ds,
 		return;
 
 	mv88e6xxx_reg_lock(chip);
-	if (mv88e6xxx_pvt_map(chip, sw_index, port) ||
-	    mv88e6xxx_map_virtual_bridge_to_pvt(ds, bridge.num))
+	if (mv88e6xxx_pvt_map(chip, sw_index, port))
 		dev_err(ds->dev, "failed to remap cross-chip Port VLAN\n");
 	mv88e6xxx_reg_unlock(chip);
 }
@@ -3094,10 +2405,10 @@ static int mv88e6xxx_setup_port_mode(struct mv88e6xxx_chip *chip, int port)
 		return mv88e6xxx_set_port_mode_normal(chip, port);
 
 	/* Setup CPU port mode depending on its supported tag format */
-	if (chip->tag_protocol == DSA_TAG_PROTO_DSA)
+	if (chip->info->tag_protocol == DSA_TAG_PROTO_DSA)
 		return mv88e6xxx_set_port_mode_dsa(chip, port);
 
-	if (chip->tag_protocol == DSA_TAG_PROTO_EDSA)
+	if (chip->info->tag_protocol == DSA_TAG_PROTO_EDSA)
 		return mv88e6xxx_set_port_mode_edsa(chip, port);
 
 	return -EINVAL;
@@ -3112,18 +2423,14 @@ static int mv88e6xxx_setup_message_port(struct mv88e6xxx_chip *chip, int port)
 
 static int mv88e6xxx_setup_egress_floods(struct mv88e6xxx_chip *chip, int port)
 {
-	int err;
+	struct dsa_switch *ds = chip->ds;
+	bool flood;
 
-	if (chip->info->ops->port_set_ucast_flood) {
-		err = chip->info->ops->port_set_ucast_flood(chip, port, true);
-		if (err)
-			return err;
-	}
-	if (chip->info->ops->port_set_mcast_flood) {
-		err = chip->info->ops->port_set_mcast_flood(chip, port, true);
-		if (err)
-			return err;
-	}
+	/* Upstream ports flood frames with unknown unicast or multicast DA */
+	flood = dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port);
+	if (chip->info->ops->port_set_egress_floods)
+		return chip->info->ops->port_set_egress_floods(chip, port,
+							       flood, flood);
 
 	return 0;
 }
@@ -3134,11 +2441,11 @@ static irqreturn_t mv88e6xxx_serdes_irq_thread_fn(int irq, void *dev_id)
 	struct mv88e6xxx_chip *chip = mvp->chip;
 	irqreturn_t ret = IRQ_NONE;
 	int port = mvp->port;
-	int lane;
+	u8 lane;
 
 	mv88e6xxx_reg_lock(chip);
 	lane = mv88e6xxx_serdes_get_lane(chip, port);
-	if (lane >= 0)
+	if (lane)
 		ret = mv88e6xxx_serdes_irq_status(chip, port, lane);
 	mv88e6xxx_reg_unlock(chip);
 
@@ -3146,7 +2453,7 @@ static irqreturn_t mv88e6xxx_serdes_irq_thread_fn(int irq, void *dev_id)
 }
 
 static int mv88e6xxx_serdes_irq_request(struct mv88e6xxx_chip *chip, int port,
-					int lane)
+					u8 lane)
 {
 	struct mv88e6xxx_port *dev_id = &chip->ports[port];
 	unsigned int irq;
@@ -3175,7 +2482,7 @@ static int mv88e6xxx_serdes_irq_request(struct mv88e6xxx_chip *chip, int port,
 }
 
 static int mv88e6xxx_serdes_irq_free(struct mv88e6xxx_chip *chip, int port,
-				     int lane)
+				     u8 lane)
 {
 	struct mv88e6xxx_port *dev_id = &chip->ports[port];
 	unsigned int irq = dev_id->serdes_irq;
@@ -3200,11 +2507,11 @@ static int mv88e6xxx_serdes_irq_free(struct mv88e6xxx_chip *chip, int port,
 static int mv88e6xxx_serdes_power(struct mv88e6xxx_chip *chip, int port,
 				  bool on)
 {
-	int lane;
+	u8 lane;
 	int err;
 
 	lane = mv88e6xxx_serdes_get_lane(chip, port);
-	if (lane < 0)
+	if (!lane)
 		return 0;
 
 	if (on) {
@@ -3222,27 +2529,6 @@ static int mv88e6xxx_serdes_power(struct mv88e6xxx_chip *chip, int port,
 	}
 
 	return err;
-}
-
-static int mv88e6xxx_set_egress_port(struct mv88e6xxx_chip *chip,
-				     enum mv88e6xxx_egress_direction direction,
-				     int port)
-{
-	int err;
-
-	if (!chip->info->ops->set_egress_port)
-		return -EOPNOTSUPP;
-
-	err = chip->info->ops->set_egress_port(chip, direction, port);
-	if (err)
-		return err;
-
-	if (direction == MV88E6XXX_EGRESS_DIR_INGRESS)
-		chip->ingress_dest_port = port;
-	else
-		chip->egress_dest_port = port;
-
-	return 0;
 }
 
 static int mv88e6xxx_setup_upstream_port(struct mv88e6xxx_chip *chip, int port)
@@ -3267,17 +2553,19 @@ static int mv88e6xxx_setup_upstream_port(struct mv88e6xxx_chip *chip, int port)
 				return err;
 		}
 
-		err = mv88e6xxx_set_egress_port(chip,
+		if (chip->info->ops->set_egress_port) {
+			err = chip->info->ops->set_egress_port(chip,
 						MV88E6XXX_EGRESS_DIR_INGRESS,
 						upstream_port);
-		if (err && err != -EOPNOTSUPP)
-			return err;
+			if (err)
+				return err;
 
-		err = mv88e6xxx_set_egress_port(chip,
+			err = chip->info->ops->set_egress_port(chip,
 						MV88E6XXX_EGRESS_DIR_EGRESS,
 						upstream_port);
-		if (err && err != -EOPNOTSUPP)
-			return err;
+			if (err)
+				return err;
+		}
 	}
 
 	return 0;
@@ -3285,58 +2573,27 @@ static int mv88e6xxx_setup_upstream_port(struct mv88e6xxx_chip *chip, int port)
 
 static int mv88e6xxx_setup_port(struct mv88e6xxx_chip *chip, int port)
 {
-	struct device_node *phy_handle = NULL;
 	struct dsa_switch *ds = chip->ds;
-	phy_interface_t mode;
-	struct dsa_port *dp;
-	int tx_amp, speed;
 	int err;
 	u16 reg;
 
 	chip->ports[port].chip = chip;
 	chip->ports[port].port = port;
 
-	dp = dsa_to_port(ds, port);
-
 	/* MAC Forcing register: don't force link, speed, duplex or flow control
 	 * state to any particular values on physical ports, but force the CPU
 	 * port and all DSA ports to their maximum bandwidth and full duplex.
 	 */
-	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port)) {
-		struct phylink_config pl_config = {};
-		unsigned long caps;
-
-		chip->info->ops->phylink_get_caps(chip, port, &pl_config);
-
-		caps = pl_config.mac_capabilities;
-
-		if (chip->info->ops->port_max_speed_mode)
-			mode = chip->info->ops->port_max_speed_mode(port);
-		else
-			mode = PHY_INTERFACE_MODE_NA;
-
-		if (caps & MAC_10000FD)
-			speed = SPEED_10000;
-		else if (caps & MAC_5000FD)
-			speed = SPEED_5000;
-		else if (caps & MAC_2500FD)
-			speed = SPEED_2500;
-		else if (caps & MAC_1000)
-			speed = SPEED_1000;
-		else if (caps & MAC_100)
-			speed = SPEED_100;
-		else
-			speed = SPEED_10;
-
+	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
 		err = mv88e6xxx_port_setup_mac(chip, port, LINK_FORCED_UP,
-					       speed, DUPLEX_FULL,
-					       PAUSE_OFF, mode);
-	} else {
+					       SPEED_MAX, DUPLEX_FULL,
+					       PAUSE_OFF,
+					       PHY_INTERFACE_MODE_NA);
+	else
 		err = mv88e6xxx_port_setup_mac(chip, port, LINK_UNFORCED,
 					       SPEED_UNFORCED, DUPLEX_UNFORCED,
 					       PAUSE_ON,
 					       PHY_INTERFACE_MODE_NA);
-	}
 	if (err)
 		return err;
 
@@ -3375,13 +2632,12 @@ static int mv88e6xxx_setup_port(struct mv88e6xxx_chip *chip, int port)
 		return err;
 
 	/* Port Control 2: don't force a good FCS, set the MTU size to
-	 * 10222 bytes, disable 802.1q tags checking, don't discard
-	 * tagged or untagged frames on this port, skip destination
-	 * address lookup on user ports, disable ARP mirroring and don't
-	 * send a copy of all transmitted/received frames on this port
-	 * to the CPU.
+	 * 10222 bytes, disable 802.1q tags checking, don't discard tagged or
+	 * untagged frames on this port, do a destination address lookup on all
+	 * received packets as usual, disable ARP mirroring and don't send a
+	 * copy of all transmitted/received frames on this port to the CPU.
 	 */
-	err = mv88e6xxx_port_set_map_da(chip, port, !dsa_is_user_port(ds, port));
+	err = mv88e6xxx_port_set_map_da(chip, port);
 	if (err)
 		return err;
 
@@ -3389,58 +2645,8 @@ static int mv88e6xxx_setup_port(struct mv88e6xxx_chip *chip, int port)
 	if (err)
 		return err;
 
-	/* On chips that support it, set all downstream DSA ports'
-	 * VLAN policy to TRAP. In combination with loading
-	 * MV88E6XXX_VID_STANDALONE as a policy entry in the VTU, this
-	 * provides a better isolation barrier between standalone
-	 * ports, as the ATU is bypassed on any intermediate switches
-	 * between the incoming port and the CPU.
-	 */
-	if (dsa_is_downstream_port(ds, port) &&
-	    chip->info->ops->port_set_policy) {
-		err = chip->info->ops->port_set_policy(chip, port,
-						MV88E6XXX_POLICY_MAPPING_VTU,
-						MV88E6XXX_POLICY_ACTION_TRAP);
-		if (err)
-			return err;
-	}
-
-	/* User ports start out in standalone mode and 802.1Q is
-	 * therefore disabled. On DSA ports, all valid VIDs are always
-	 * loaded in the VTU - therefore, enable 802.1Q in order to take
-	 * advantage of VLAN policy on chips that supports it.
-	 */
 	err = mv88e6xxx_port_set_8021q_mode(chip, port,
-				dsa_is_user_port(ds, port) ?
-				MV88E6XXX_PORT_CTL2_8021Q_MODE_DISABLED :
-				MV88E6XXX_PORT_CTL2_8021Q_MODE_SECURE);
-	if (err)
-		return err;
-
-	/* Bind MV88E6XXX_VID_STANDALONE to MV88E6XXX_FID_STANDALONE by
-	 * virtue of the fact that mv88e6xxx_atu_new() will pick it as
-	 * the first free FID. This will be used as the private PVID for
-	 * unbridged ports. Shared (DSA and CPU) ports must also be
-	 * members of this VID, in order to trap all frames assigned to
-	 * it to the CPU.
-	 */
-	err = mv88e6xxx_port_vlan_join(chip, port, MV88E6XXX_VID_STANDALONE,
-				       MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_UNMODIFIED,
-				       false);
-	if (err)
-		return err;
-
-	/* Associate MV88E6XXX_VID_BRIDGED with MV88E6XXX_FID_BRIDGED in the
-	 * ATU by virtue of the fact that mv88e6xxx_atu_new() will pick it as
-	 * the first free FID after MV88E6XXX_FID_STANDALONE. This will be used
-	 * as the private PVID on ports under a VLAN-unaware bridge.
-	 * Shared (DSA and CPU) ports must also be members of it, to translate
-	 * the VID from the DSA tag into MV88E6XXX_FID_BRIDGED, instead of
-	 * relying on their port default FID.
-	 */
-	err = mv88e6xxx_port_vlan_join(chip, port, MV88E6XXX_VID_BRIDGED,
-				       MV88E6XXX_G1_VTU_DATA_MEMBER_TAG_UNMODIFIED,
-				       false);
+				MV88E6XXX_PORT_CTL2_8021Q_MODE_DISABLED);
 	if (err)
 		return err;
 
@@ -3450,20 +2656,15 @@ static int mv88e6xxx_setup_port(struct mv88e6xxx_chip *chip, int port)
 			return err;
 	}
 
-	/* Port Association Vector: disable automatic address learning
-	 * on all user ports since they start out in standalone
-	 * mode. When joining a bridge, learning will be configured to
-	 * match the bridge port settings. Enable learning on all
-	 * DSA/CPU ports. NOTE: FROM_CPU frames always bypass the
-	 * learning process.
-	 *
-	 * Disable HoldAt1, IntOnAgeOut, LockedPort, IgnoreWrongData,
-	 * and RefreshLocked. I.e. setup standard automatic learning.
+	/* Port Association Vector: when learning source addresses
+	 * of packets, add the address to the address database using
+	 * a port bitmap that has only the bit for this port set and
+	 * the other bits clear.
 	 */
-	if (dsa_is_user_port(ds, port))
+	reg = 1 << port;
+	/* Disable learning for CPU port */
+	if (dsa_is_cpu_port(ds, port))
 		reg = 0;
-	else
-		reg = 1 << port;
 
 	err = mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_ASSOC_VECTOR,
 				   reg);
@@ -3512,27 +2713,11 @@ static int mv88e6xxx_setup_port(struct mv88e6xxx_chip *chip, int port)
 			return err;
 	}
 
-	if (chip->info->ops->serdes_set_tx_amplitude) {
-		if (dp)
-			phy_handle = of_parse_phandle(dp->dn, "phy-handle", 0);
-
-		if (phy_handle && !of_property_read_u32(phy_handle,
-							"tx-p2p-microvolt",
-							&tx_amp))
-			err = chip->info->ops->serdes_set_tx_amplitude(chip,
-								port, tx_amp);
-		if (phy_handle) {
-			of_node_put(phy_handle);
-			if (err)
-				return err;
-		}
-	}
-
 	/* Port based VLAN map: give each port the same default address
 	 * database, and allow bidirectional communication between the
 	 * CPU and DSA port(s), and the other ports.
 	 */
-	err = mv88e6xxx_port_set_fid(chip, port, MV88E6XXX_FID_STANDALONE);
+	err = mv88e6xxx_port_set_fid(chip, port, 0);
 	if (err)
 		return err;
 
@@ -3689,7 +2874,7 @@ static void mv88e6xxx_teardown(struct dsa_switch *ds)
 {
 	mv88e6xxx_teardown_devlink_params(ds);
 	dsa_devlink_resources_unregister(ds);
-	mv88e6xxx_teardown_devlink_regions_global(ds);
+	mv88e6xxx_teardown_devlink_regions(ds);
 }
 
 static int mv88e6xxx_setup(struct dsa_switch *ds)
@@ -3701,15 +2886,6 @@ static int mv88e6xxx_setup(struct dsa_switch *ds)
 
 	chip->ds = ds;
 	ds->slave_mii_bus = mv88e6xxx_default_mdio_bus(chip);
-
-	/* Since virtual bridges are mapped in the PVT, the number we support
-	 * depends on the physical switch topology. We need to let DSA figure
-	 * that out and therefore we cannot set this at dsa_register_switch()
-	 * time.
-	 */
-	if (mv88e6xxx_has_pvt(chip))
-		ds->max_num_bridges = MV88E6XXX_MAX_PVT_SWITCHES -
-				      ds->dst->last_switch - 1;
 
 	mv88e6xxx_reg_lock(chip);
 
@@ -3729,17 +2905,6 @@ static int mv88e6xxx_setup(struct dsa_switch *ds)
 			chip->ports[i].cmode = cmode;
 		}
 	}
-
-	err = mv88e6xxx_vtu_setup(chip);
-	if (err)
-		goto unlock;
-
-	/* Must be called after mv88e6xxx_vtu_setup (which flushes the
-	 * VTU, thereby also flushing the STU).
-	 */
-	err = mv88e6xxx_stu_setup(chip);
-	if (err)
-		goto unlock;
 
 	/* Setup Switch Port Registers */
 	for (i = 0; i < mv88e6xxx_num_ports(chip); i++) {
@@ -3767,6 +2932,10 @@ static int mv88e6xxx_setup(struct dsa_switch *ds)
 		goto unlock;
 
 	err = mv88e6xxx_phy_setup(chip);
+	if (err)
+		goto unlock;
+
+	err = mv88e6xxx_vtu_setup(chip);
 	if (err)
 		goto unlock;
 
@@ -3840,7 +3009,7 @@ unlock:
 	if (err)
 		goto out_resources;
 
-	err = mv88e6xxx_setup_devlink_regions_global(ds);
+	err = mv88e6xxx_setup_devlink_regions(ds);
 	if (err)
 		goto out_params;
 
@@ -3854,21 +3023,10 @@ out_resources:
 	return err;
 }
 
-static int mv88e6xxx_port_setup(struct dsa_switch *ds, int port)
-{
-	return mv88e6xxx_setup_devlink_regions_port(ds, port);
-}
-
-static void mv88e6xxx_port_teardown(struct dsa_switch *ds, int port)
-{
-	mv88e6xxx_teardown_devlink_regions_port(ds, port);
-}
-
 /* prod_id for switch families which do not have a PHY model number */
 static const u16 family_prod_id_table[] = {
 	[MV88E6XXX_FAMILY_6341] = MV88E6XXX_PORT_SWITCH_ID_PROD_6341,
 	[MV88E6XXX_FAMILY_6390] = MV88E6XXX_PORT_SWITCH_ID_PROD_6390,
-	[MV88E6XXX_FAMILY_6393] = MV88E6XXX_PORT_SWITCH_ID_PROD_6393X,
 };
 
 static int mv88e6xxx_mdio_read(struct mii_bus *bus, int phy, int reg)
@@ -4086,12 +3244,10 @@ static const struct mv88e6xxx_ops mv88e6085_ops = {
 	.phy_read = mv88e6185_phy_ppu_read,
 	.phy_write = mv88e6185_phy_ppu_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
 	.port_pause_limit = mv88e6097_port_pause_limit,
@@ -4115,9 +3271,7 @@ static const struct mv88e6xxx_ops mv88e6085_ops = {
 	.rmu_disable = mv88e6085_g1_rmu_disable,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4129,11 +3283,9 @@ static const struct mv88e6xxx_ops mv88e6095_ops = {
 	.phy_read = mv88e6185_phy_ppu_read,
 	.phy_write = mv88e6185_phy_ppu_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6185_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_set_frame_mode = mv88e6085_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6185_port_set_forward_unknown,
-	.port_set_mcast_flood = mv88e6185_port_set_default_forward,
+	.port_set_egress_floods = mv88e6185_port_set_egress_floods,
 	.port_set_upstream_port = mv88e6095_port_set_upstream_port,
 	.port_get_cmode = mv88e6185_port_get_cmode,
 	.port_setup_message_port = mv88e6xxx_setup_message_port,
@@ -4143,15 +3295,12 @@ static const struct mv88e6xxx_ops mv88e6095_ops = {
 	.stats_get_strings = mv88e6095_stats_get_strings,
 	.stats_get_stats = mv88e6095_stats_get_stats,
 	.mgmt_rsvd2cpu = mv88e6185_g2_mgmt_rsvd2cpu,
-	.serdes_power = mv88e6185_serdes_power,
-	.serdes_get_lane = mv88e6185_serdes_get_lane,
-	.serdes_pcs_get_state = mv88e6185_serdes_pcs_get_state,
 	.ppu_enable = mv88e6185_g1_ppu_enable,
 	.ppu_disable = mv88e6185_g1_ppu_disable,
 	.reset = mv88e6185_g1_reset,
 	.vtu_getnext = mv88e6185_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6185_g1_vtu_loadpurge,
-	.phylink_get_caps = mv88e6095_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4164,13 +3313,11 @@ static const struct mv88e6xxx_ops mv88e6097_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6185_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_egress_rate_limiting = mv88e6095_port_egress_rate_limiting,
 	.port_pause_limit = mv88e6097_port_pause_limit,
@@ -4187,20 +3334,12 @@ static const struct mv88e6xxx_ops mv88e6097_ops = {
 	.set_egress_port = mv88e6095_g1_set_egress_port,
 	.watchdog_ops = &mv88e6097_watchdog_ops,
 	.mgmt_rsvd2cpu = mv88e6352_g2_mgmt_rsvd2cpu,
-	.serdes_power = mv88e6185_serdes_power,
-	.serdes_get_lane = mv88e6185_serdes_get_lane,
-	.serdes_pcs_get_state = mv88e6185_serdes_pcs_get_state,
-	.serdes_irq_mapping = mv88e6390_serdes_irq_mapping,
-	.serdes_irq_enable = mv88e6097_serdes_irq_enable,
-	.serdes_irq_status = mv88e6097_serdes_irq_status,
 	.pot_clear = mv88e6xxx_g2_pot_clear,
 	.reset = mv88e6352_g1_reset,
 	.rmu_disable = mv88e6085_g1_rmu_disable,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.phylink_get_caps = mv88e6095_phylink_get_caps,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4213,11 +3352,9 @@ static const struct mv88e6xxx_ops mv88e6123_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_set_frame_mode = mv88e6085_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_disable_learn_limit = mv88e6xxx_port_disable_learn_limit,
 	.port_disable_pri_override = mv88e6xxx_port_disable_pri_override,
 	.port_get_cmode = mv88e6185_port_get_cmode,
@@ -4237,9 +3374,7 @@ static const struct mv88e6xxx_ops mv88e6123_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4251,12 +3386,10 @@ static const struct mv88e6xxx_ops mv88e6131_ops = {
 	.phy_read = mv88e6185_phy_ppu_read,
 	.phy_write = mv88e6185_phy_ppu_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6185_port_set_forward_unknown,
-	.port_set_mcast_flood = mv88e6185_port_set_default_forward,
+	.port_set_egress_floods = mv88e6185_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_upstream_port = mv88e6095_port_set_upstream_port,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
@@ -4280,7 +3413,7 @@ static const struct mv88e6xxx_ops mv88e6131_ops = {
 	.reset = mv88e6185_g1_reset,
 	.vtu_getnext = mv88e6185_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6185_g1_vtu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6141_ops = {
@@ -4294,15 +3427,12 @@ static const struct mv88e6xxx_ops mv88e6141_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6341_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6341_port_max_speed_mode,
 	.port_tag_remap = mv88e6095_port_tag_remap,
-	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4328,8 +3458,6 @@ static const struct mv88e6xxx_ops mv88e6141_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6341_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -4346,7 +3474,7 @@ static const struct mv88e6xxx_ops mv88e6141_ops = {
 	.serdes_get_stats = mv88e6390_serdes_get_stats,
 	.serdes_get_regs_len = mv88e6390_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
-	.phylink_get_caps = mv88e6341_phylink_get_caps,
+	.phylink_validate = mv88e6341_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6161_ops = {
@@ -4358,12 +3486,10 @@ static const struct mv88e6xxx_ops mv88e6161_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
 	.port_pause_limit = mv88e6097_port_pause_limit,
@@ -4386,11 +3512,9 @@ static const struct mv88e6xxx_ops mv88e6161_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.avb_ops = &mv88e6165_avb_ops,
 	.ptp_ops = &mv88e6165_ptp_ops,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4403,7 +3527,6 @@ static const struct mv88e6xxx_ops mv88e6165_ops = {
 	.phy_read = mv88e6165_phy_read,
 	.phy_write = mv88e6165_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_disable_learn_limit = mv88e6xxx_port_disable_learn_limit,
 	.port_disable_pri_override = mv88e6xxx_port_disable_pri_override,
@@ -4424,11 +3547,9 @@ static const struct mv88e6xxx_ops mv88e6165_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.avb_ops = &mv88e6165_avb_ops,
 	.ptp_ops = &mv88e6165_ptp_ops,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6171_ops = {
@@ -4440,13 +3561,11 @@ static const struct mv88e6xxx_ops mv88e6171_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4470,9 +3589,7 @@ static const struct mv88e6xxx_ops mv88e6171_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6172_ops = {
@@ -4486,14 +3603,12 @@ static const struct mv88e6xxx_ops mv88e6172_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6352_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4518,8 +3633,6 @@ static const struct mv88e6xxx_ops mv88e6172_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_get_lane = mv88e6352_serdes_get_lane,
 	.serdes_pcs_get_state = mv88e6352_serdes_pcs_get_state,
 	.serdes_pcs_config = mv88e6352_serdes_pcs_config,
@@ -4529,7 +3642,7 @@ static const struct mv88e6xxx_ops mv88e6172_ops = {
 	.serdes_get_regs_len = mv88e6352_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6352_serdes_get_regs,
 	.gpio_ops = &mv88e6352_gpio_ops,
-	.phylink_get_caps = mv88e6352_phylink_get_caps,
+	.phylink_validate = mv88e6352_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6175_ops = {
@@ -4541,13 +3654,12 @@ static const struct mv88e6xxx_ops mv88e6175_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
+	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4571,9 +3683,7 @@ static const struct mv88e6xxx_ops mv88e6175_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6176_ops = {
@@ -4587,14 +3697,12 @@ static const struct mv88e6xxx_ops mv88e6176_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6352_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4619,8 +3727,6 @@ static const struct mv88e6xxx_ops mv88e6176_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_get_lane = mv88e6352_serdes_get_lane,
 	.serdes_pcs_get_state = mv88e6352_serdes_pcs_get_state,
 	.serdes_pcs_config = mv88e6352_serdes_pcs_config,
@@ -4632,9 +3738,8 @@ static const struct mv88e6xxx_ops mv88e6176_ops = {
 	.serdes_irq_status = mv88e6352_serdes_irq_status,
 	.serdes_get_regs_len = mv88e6352_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6352_serdes_get_regs,
-	.serdes_set_tx_amplitude = mv88e6352_serdes_set_tx_amplitude,
 	.gpio_ops = &mv88e6352_gpio_ops,
-	.phylink_get_caps = mv88e6352_phylink_get_caps,
+	.phylink_validate = mv88e6352_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6185_ops = {
@@ -4645,11 +3750,9 @@ static const struct mv88e6xxx_ops mv88e6185_ops = {
 	.phy_read = mv88e6185_phy_ppu_read,
 	.phy_write = mv88e6185_phy_ppu_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6185_port_sync_link,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_set_frame_mode = mv88e6085_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6185_port_set_forward_unknown,
-	.port_set_mcast_flood = mv88e6185_port_set_default_forward,
+	.port_set_egress_floods = mv88e6185_port_set_egress_floods,
 	.port_egress_rate_limiting = mv88e6095_port_egress_rate_limiting,
 	.port_set_upstream_port = mv88e6095_port_set_upstream_port,
 	.port_set_pause = mv88e6185_port_set_pause,
@@ -4664,16 +3767,13 @@ static const struct mv88e6xxx_ops mv88e6185_ops = {
 	.set_egress_port = mv88e6095_g1_set_egress_port,
 	.watchdog_ops = &mv88e6097_watchdog_ops,
 	.mgmt_rsvd2cpu = mv88e6185_g2_mgmt_rsvd2cpu,
-	.serdes_power = mv88e6185_serdes_power,
-	.serdes_get_lane = mv88e6185_serdes_get_lane,
-	.serdes_pcs_get_state = mv88e6185_serdes_pcs_get_state,
 	.set_cascade_port = mv88e6185_g1_set_cascade_port,
 	.ppu_enable = mv88e6185_g1_ppu_enable,
 	.ppu_disable = mv88e6185_g1_ppu_disable,
 	.reset = mv88e6185_g1_reset,
 	.vtu_getnext = mv88e6185_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6185_g1_vtu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
 
@@ -4687,15 +3787,13 @@ static const struct mv88e6xxx_ops mv88e6190_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_pause_limit = mv88e6390_port_pause_limit,
@@ -4720,8 +3818,6 @@ static const struct mv88e6xxx_ops mv88e6190_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -4737,7 +3833,7 @@ static const struct mv88e6xxx_ops mv88e6190_ops = {
 	.serdes_get_regs_len = mv88e6390_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
 	.gpio_ops = &mv88e6352_gpio_ops,
-	.phylink_get_caps = mv88e6390_phylink_get_caps,
+	.phylink_validate = mv88e6390_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6190x_ops = {
@@ -4750,15 +3846,13 @@ static const struct mv88e6xxx_ops mv88e6190x_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390x_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390x_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_pause_limit = mv88e6390_port_pause_limit,
@@ -4783,8 +3877,6 @@ static const struct mv88e6xxx_ops mv88e6190x_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390x_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -4800,7 +3892,7 @@ static const struct mv88e6xxx_ops mv88e6190x_ops = {
 	.serdes_get_regs_len = mv88e6390_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
 	.gpio_ops = &mv88e6352_gpio_ops,
-	.phylink_get_caps = mv88e6390x_phylink_get_caps,
+	.phylink_validate = mv88e6390x_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6191_ops = {
@@ -4813,14 +3905,12 @@ static const struct mv88e6xxx_ops mv88e6191_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_pause_limit = mv88e6390_port_pause_limit,
 	.port_disable_learn_limit = mv88e6xxx_port_disable_learn_limit,
@@ -4844,8 +3934,6 @@ static const struct mv88e6xxx_ops mv88e6191_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -4862,7 +3950,7 @@ static const struct mv88e6xxx_ops mv88e6191_ops = {
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
 	.avb_ops = &mv88e6390_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6390_phylink_get_caps,
+	.phylink_validate = mv88e6390_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6240_ops = {
@@ -4876,14 +3964,12 @@ static const struct mv88e6xxx_ops mv88e6240_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6352_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -4908,8 +3994,6 @@ static const struct mv88e6xxx_ops mv88e6240_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_get_lane = mv88e6352_serdes_get_lane,
 	.serdes_pcs_get_state = mv88e6352_serdes_pcs_get_state,
 	.serdes_pcs_config = mv88e6352_serdes_pcs_config,
@@ -4921,11 +4005,10 @@ static const struct mv88e6xxx_ops mv88e6240_ops = {
 	.serdes_irq_status = mv88e6352_serdes_irq_status,
 	.serdes_get_regs_len = mv88e6352_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6352_serdes_get_regs,
-	.serdes_set_tx_amplitude = mv88e6352_serdes_set_tx_amplitude,
 	.gpio_ops = &mv88e6352_gpio_ops,
 	.avb_ops = &mv88e6352_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6352_phylink_get_caps,
+	.phylink_validate = mv88e6352_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6250_ops = {
@@ -4939,13 +4022,11 @@ static const struct mv88e6xxx_ops mv88e6250_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6250_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
 	.port_pause_limit = mv88e6097_port_pause_limit,
@@ -4961,11 +4042,11 @@ static const struct mv88e6xxx_ops mv88e6250_ops = {
 	.mgmt_rsvd2cpu = mv88e6352_g2_mgmt_rsvd2cpu,
 	.pot_clear = mv88e6xxx_g2_pot_clear,
 	.reset = mv88e6250_g1_reset,
-	.vtu_getnext = mv88e6185_g1_vtu_getnext,
-	.vtu_loadpurge = mv88e6185_g1_vtu_loadpurge,
+	.vtu_getnext = mv88e6250_g1_vtu_getnext,
+	.vtu_loadpurge = mv88e6250_g1_vtu_loadpurge,
 	.avb_ops = &mv88e6352_avb_ops,
 	.ptp_ops = &mv88e6250_ptp_ops,
-	.phylink_get_caps = mv88e6250_phylink_get_caps,
+	.phylink_validate = mv88e6065_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6290_ops = {
@@ -4978,15 +4059,13 @@ static const struct mv88e6xxx_ops mv88e6290_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_pause_limit = mv88e6390_port_pause_limit,
 	.port_disable_learn_limit = mv88e6xxx_port_disable_learn_limit,
@@ -5010,8 +4089,6 @@ static const struct mv88e6xxx_ops mv88e6290_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -5029,7 +4106,7 @@ static const struct mv88e6xxx_ops mv88e6290_ops = {
 	.gpio_ops = &mv88e6352_gpio_ops,
 	.avb_ops = &mv88e6390_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6390_phylink_get_caps,
+	.phylink_validate = mv88e6390_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6320_ops = {
@@ -5043,13 +4120,10 @@ static const struct mv88e6xxx_ops mv88e6320_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
-	.port_set_rgmii_delay = mv88e6320_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5074,7 +4148,7 @@ static const struct mv88e6xxx_ops mv88e6320_ops = {
 	.gpio_ops = &mv88e6352_gpio_ops,
 	.avb_ops = &mv88e6352_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6321_ops = {
@@ -5088,13 +4162,10 @@ static const struct mv88e6xxx_ops mv88e6321_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
-	.port_set_rgmii_delay = mv88e6320_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5118,7 +4189,7 @@ static const struct mv88e6xxx_ops mv88e6321_ops = {
 	.gpio_ops = &mv88e6352_gpio_ops,
 	.avb_ops = &mv88e6352_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6341_ops = {
@@ -5132,15 +4203,12 @@ static const struct mv88e6xxx_ops mv88e6341_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6341_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6341_port_max_speed_mode,
 	.port_tag_remap = mv88e6095_port_tag_remap,
-	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5166,8 +4234,6 @@ static const struct mv88e6xxx_ops mv88e6341_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6341_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -5186,7 +4252,7 @@ static const struct mv88e6xxx_ops mv88e6341_ops = {
 	.serdes_get_stats = mv88e6390_serdes_get_stats,
 	.serdes_get_regs_len = mv88e6390_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
-	.phylink_get_caps = mv88e6341_phylink_get_caps,
+	.phylink_validate = mv88e6341_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6350_ops = {
@@ -5198,13 +4264,11 @@ static const struct mv88e6xxx_ops mv88e6350_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5228,9 +4292,7 @@ static const struct mv88e6xxx_ops mv88e6350_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6351_ops = {
@@ -5242,13 +4304,12 @@ static const struct mv88e6xxx_ops mv88e6351_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6185_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
+	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5272,11 +4333,9 @@ static const struct mv88e6xxx_ops mv88e6351_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.avb_ops = &mv88e6352_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6185_phylink_get_caps,
+	.phylink_validate = mv88e6185_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6352_ops = {
@@ -5290,14 +4349,12 @@ static const struct mv88e6xxx_ops mv88e6352_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6352_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6352_port_set_speed_duplex,
 	.port_tag_remap = mv88e6095_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5322,8 +4379,6 @@ static const struct mv88e6xxx_ops mv88e6352_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6352_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6352_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6352_g1_stu_getnext,
-	.stu_loadpurge = mv88e6352_g1_stu_loadpurge,
 	.serdes_get_lane = mv88e6352_serdes_get_lane,
 	.serdes_pcs_get_state = mv88e6352_serdes_pcs_get_state,
 	.serdes_pcs_config = mv88e6352_serdes_pcs_config,
@@ -5341,8 +4396,7 @@ static const struct mv88e6xxx_ops mv88e6352_ops = {
 	.serdes_get_stats = mv88e6352_serdes_get_stats,
 	.serdes_get_regs_len = mv88e6352_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6352_serdes_get_regs,
-	.serdes_set_tx_amplitude = mv88e6352_serdes_set_tx_amplitude,
-	.phylink_get_caps = mv88e6352_phylink_get_caps,
+	.phylink_validate = mv88e6352_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6390_ops = {
@@ -5355,15 +4409,13 @@ static const struct mv88e6xxx_ops mv88e6390_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5389,8 +4441,6 @@ static const struct mv88e6xxx_ops mv88e6390_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390_serdes_get_lane,
 	/* Check status register pause & lpa register */
@@ -5409,7 +4459,7 @@ static const struct mv88e6xxx_ops mv88e6390_ops = {
 	.serdes_get_stats = mv88e6390_serdes_get_stats,
 	.serdes_get_regs_len = mv88e6390_serdes_get_regs_len,
 	.serdes_get_regs = mv88e6390_serdes_get_regs,
-	.phylink_get_caps = mv88e6390_phylink_get_caps,
+	.phylink_validate = mv88e6390_phylink_validate,
 };
 
 static const struct mv88e6xxx_ops mv88e6390x_ops = {
@@ -5422,15 +4472,13 @@ static const struct mv88e6xxx_ops mv88e6390x_ops = {
 	.phy_read = mv88e6xxx_g2_smi_phy_read,
 	.phy_write = mv88e6xxx_g2_smi_phy_write,
 	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
 	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
 	.port_set_speed_duplex = mv88e6390x_port_set_speed_duplex,
 	.port_max_speed_mode = mv88e6390x_port_max_speed_mode,
 	.port_tag_remap = mv88e6390_port_tag_remap,
 	.port_set_policy = mv88e6352_port_set_policy,
 	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
+	.port_set_egress_floods = mv88e6352_port_set_egress_floods,
 	.port_set_ether_type = mv88e6351_port_set_ether_type,
 	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
 	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
@@ -5456,8 +4504,6 @@ static const struct mv88e6xxx_ops mv88e6390x_ops = {
 	.atu_set_hash = mv88e6165_g1_atu_set_hash,
 	.vtu_getnext = mv88e6390_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
 	.serdes_power = mv88e6390_serdes_power,
 	.serdes_get_lane = mv88e6390x_serdes_get_lane,
 	.serdes_pcs_get_state = mv88e6390_serdes_pcs_get_state,
@@ -5475,73 +4521,7 @@ static const struct mv88e6xxx_ops mv88e6390x_ops = {
 	.gpio_ops = &mv88e6352_gpio_ops,
 	.avb_ops = &mv88e6390_avb_ops,
 	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6390x_phylink_get_caps,
-};
-
-static const struct mv88e6xxx_ops mv88e6393x_ops = {
-	/* MV88E6XXX_FAMILY_6393 */
-	.setup_errata = mv88e6393x_serdes_setup_errata,
-	.irl_init_all = mv88e6390_g2_irl_init_all,
-	.get_eeprom = mv88e6xxx_g2_get_eeprom8,
-	.set_eeprom = mv88e6xxx_g2_set_eeprom8,
-	.set_switch_mac = mv88e6xxx_g2_set_switch_mac,
-	.phy_read = mv88e6xxx_g2_smi_phy_read,
-	.phy_write = mv88e6xxx_g2_smi_phy_write,
-	.port_set_link = mv88e6xxx_port_set_link,
-	.port_sync_link = mv88e6xxx_port_sync_link,
-	.port_set_rgmii_delay = mv88e6390_port_set_rgmii_delay,
-	.port_set_speed_duplex = mv88e6393x_port_set_speed_duplex,
-	.port_max_speed_mode = mv88e6393x_port_max_speed_mode,
-	.port_tag_remap = mv88e6390_port_tag_remap,
-	.port_set_policy = mv88e6393x_port_set_policy,
-	.port_set_frame_mode = mv88e6351_port_set_frame_mode,
-	.port_set_ucast_flood = mv88e6352_port_set_ucast_flood,
-	.port_set_mcast_flood = mv88e6352_port_set_mcast_flood,
-	.port_set_ether_type = mv88e6393x_port_set_ether_type,
-	.port_set_jumbo_size = mv88e6165_port_set_jumbo_size,
-	.port_egress_rate_limiting = mv88e6097_port_egress_rate_limiting,
-	.port_pause_limit = mv88e6390_port_pause_limit,
-	.port_disable_learn_limit = mv88e6xxx_port_disable_learn_limit,
-	.port_disable_pri_override = mv88e6xxx_port_disable_pri_override,
-	.port_get_cmode = mv88e6352_port_get_cmode,
-	.port_set_cmode = mv88e6393x_port_set_cmode,
-	.port_setup_message_port = mv88e6xxx_setup_message_port,
-	.port_set_upstream_port = mv88e6393x_port_set_upstream_port,
-	.stats_snapshot = mv88e6390_g1_stats_snapshot,
-	.stats_set_histogram = mv88e6390_g1_stats_set_histogram,
-	.stats_get_sset_count = mv88e6320_stats_get_sset_count,
-	.stats_get_strings = mv88e6320_stats_get_strings,
-	.stats_get_stats = mv88e6390_stats_get_stats,
-	/* .set_cpu_port is missing because this family does not support a global
-	 * CPU port, only per port CPU port which is set via
-	 * .port_set_upstream_port method.
-	 */
-	.set_egress_port = mv88e6393x_set_egress_port,
-	.watchdog_ops = &mv88e6393x_watchdog_ops,
-	.mgmt_rsvd2cpu = mv88e6393x_port_mgmt_rsvd2cpu,
-	.pot_clear = mv88e6xxx_g2_pot_clear,
-	.reset = mv88e6352_g1_reset,
-	.rmu_disable = mv88e6390_g1_rmu_disable,
-	.atu_get_hash = mv88e6165_g1_atu_get_hash,
-	.atu_set_hash = mv88e6165_g1_atu_set_hash,
-	.vtu_getnext = mv88e6390_g1_vtu_getnext,
-	.vtu_loadpurge = mv88e6390_g1_vtu_loadpurge,
-	.stu_getnext = mv88e6390_g1_stu_getnext,
-	.stu_loadpurge = mv88e6390_g1_stu_loadpurge,
-	.serdes_power = mv88e6393x_serdes_power,
-	.serdes_get_lane = mv88e6393x_serdes_get_lane,
-	.serdes_pcs_get_state = mv88e6393x_serdes_pcs_get_state,
-	.serdes_pcs_config = mv88e6390_serdes_pcs_config,
-	.serdes_pcs_an_restart = mv88e6390_serdes_pcs_an_restart,
-	.serdes_pcs_link_up = mv88e6390_serdes_pcs_link_up,
-	.serdes_irq_mapping = mv88e6390_serdes_irq_mapping,
-	.serdes_irq_enable = mv88e6393x_serdes_irq_enable,
-	.serdes_irq_status = mv88e6393x_serdes_irq_status,
-	/* TODO: serdes stats */
-	.gpio_ops = &mv88e6352_gpio_ops,
-	.avb_ops = &mv88e6390_avb_ops,
-	.ptp_ops = &mv88e6352_ptp_ops,
-	.phylink_get_caps = mv88e6393x_phylink_get_caps,
+	.phylink_validate = mv88e6390x_phylink_validate,
 };
 
 static const struct mv88e6xxx_info mv88e6xxx_table[] = {
@@ -5554,7 +4534,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 10,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5565,6 +4544,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ops = &mv88e6085_ops,
 	},
 
@@ -5585,6 +4565,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g1_irqs = 8,
 		.atu_move_port_mask = 0xf,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ops = &mv88e6095_ops,
 	},
 
@@ -5597,7 +4578,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 11,
 		.num_internal_phys = 8,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5608,7 +4588,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6097_ops,
 	},
 
@@ -5621,7 +4601,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 3,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5632,7 +4611,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6123_ops,
 	},
 
@@ -5653,6 +4632,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g1_irqs = 9,
 		.atu_move_port_mask = 0xf,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ops = &mv88e6131_ops,
 	},
 
@@ -5666,7 +4646,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 5,
 		.num_gpio = 11,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x10,
 		.global1_addr = 0x1b,
@@ -5677,7 +4656,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g2_irqs = 10,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6141_ops,
 	},
 
@@ -5690,7 +4669,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 6,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5701,7 +4679,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6161_ops,
 	},
@@ -5715,7 +4693,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 6,
 		.num_internal_phys = 0,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5726,6 +4703,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6165_ops,
 	},
@@ -5739,7 +4717,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 7,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5750,7 +4727,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6171_ops,
 	},
 
@@ -5764,7 +4741,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 5,
 		.num_gpio = 15,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5775,7 +4751,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6172_ops,
 	},
 
@@ -5788,7 +4764,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 7,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5799,7 +4774,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6175_ops,
 	},
 
@@ -5813,7 +4788,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 5,
 		.num_gpio = 15,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5824,7 +4798,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6176_ops,
 	},
 
@@ -5845,7 +4819,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g1_irqs = 8,
 		.atu_move_port_mask = 0xf,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6185_ops,
 	},
 
@@ -5859,11 +4833,11 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 9,
 		.num_gpio = 16,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
 		.global2_addr = 0x1c,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.age_time_coeff = 3750,
 		.g1_irqs = 9,
 		.g2_irqs = 14,
@@ -5883,7 +4857,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 9,
 		.num_gpio = 16,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5894,6 +4867,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0x1f,
 		.pvt = true,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ops = &mv88e6190x_ops,
 	},
 
@@ -5906,7 +4880,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 11,	/* 10 + Z80 */
 		.num_internal_phys = 9,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -5917,54 +4890,9 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0x1f,
 		.pvt = true,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6191_ops,
-	},
-
-	[MV88E6191X] = {
-		.prod_num = MV88E6XXX_PORT_SWITCH_ID_PROD_6191X,
-		.family = MV88E6XXX_FAMILY_6393,
-		.name = "Marvell 88E6191X",
-		.num_databases = 4096,
-		.num_ports = 11,	/* 10 + Z80 */
-		.num_internal_phys = 9,
-		.max_vid = 8191,
-		.max_sid = 63,
-		.port_base_addr = 0x0,
-		.phy_base_addr = 0x0,
-		.global1_addr = 0x1b,
-		.global2_addr = 0x1c,
-		.age_time_coeff = 3750,
-		.g1_irqs = 10,
-		.g2_irqs = 14,
-		.atu_move_port_mask = 0x1f,
-		.pvt = true,
-		.multi_chip = true,
-		.ptp_support = true,
-		.ops = &mv88e6393x_ops,
-	},
-
-	[MV88E6193X] = {
-		.prod_num = MV88E6XXX_PORT_SWITCH_ID_PROD_6193X,
-		.family = MV88E6XXX_FAMILY_6393,
-		.name = "Marvell 88E6193X",
-		.num_databases = 4096,
-		.num_ports = 11,	/* 10 + Z80 */
-		.num_internal_phys = 9,
-		.max_vid = 8191,
-		.max_sid = 63,
-		.port_base_addr = 0x0,
-		.phy_base_addr = 0x0,
-		.global1_addr = 0x1b,
-		.global2_addr = 0x1c,
-		.age_time_coeff = 3750,
-		.g1_irqs = 10,
-		.g2_irqs = 14,
-		.atu_move_port_mask = 0x1f,
-		.pvt = true,
-		.multi_chip = true,
-		.ptp_support = true,
-		.ops = &mv88e6393x_ops,
 	},
 
 	[MV88E6220] = {
@@ -5989,6 +4917,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g2_irqs = 10,
 		.atu_move_port_mask = 0xf,
 		.dual_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6250_ops,
 	},
@@ -6003,7 +4932,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 5,
 		.num_gpio = 15,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6014,7 +4942,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6240_ops,
 	},
@@ -6036,6 +4964,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g2_irqs = 10,
 		.atu_move_port_mask = 0xf,
 		.dual_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6250_ops,
 	},
@@ -6049,7 +4978,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 9,
 		.num_gpio = 16,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6060,6 +4988,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0x1f,
 		.pvt = true,
 		.multi_chip = true,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6290_ops,
 	},
@@ -6084,7 +5013,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6320_ops,
 	},
@@ -6108,7 +5037,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g2_irqs = 10,
 		.atu_move_port_mask = 0xf,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6321_ops,
 	},
@@ -6123,7 +5052,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 6,
 		.num_gpio = 11,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x10,
 		.global1_addr = 0x1b,
@@ -6134,7 +5062,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.g2_irqs = 10,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6341_ops,
 	},
@@ -6148,7 +5076,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 7,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6159,7 +5086,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6350_ops,
 	},
 
@@ -6172,7 +5099,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_ports = 7,
 		.num_internal_phys = 5,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6183,7 +5109,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ops = &mv88e6351_ops,
 	},
 
@@ -6197,7 +5123,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 5,
 		.num_gpio = 15,
 		.max_vid = 4095,
-		.max_sid = 63,
 		.port_base_addr = 0x10,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6208,7 +5133,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0xf,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_SUPPORTED,
+		.tag_protocol = DSA_TAG_PROTO_EDSA,
 		.ptp_support = true,
 		.ops = &mv88e6352_ops,
 	},
@@ -6222,7 +5147,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 9,
 		.num_gpio = 16,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6233,7 +5157,7 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0x1f,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_UNDOCUMENTED,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6390_ops,
 	},
@@ -6247,7 +5171,6 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.num_internal_phys = 9,
 		.num_gpio = 16,
 		.max_vid = 8191,
-		.max_sid = 63,
 		.port_base_addr = 0x0,
 		.phy_base_addr = 0x0,
 		.global1_addr = 0x1b,
@@ -6258,32 +5181,9 @@ static const struct mv88e6xxx_info mv88e6xxx_table[] = {
 		.atu_move_port_mask = 0x1f,
 		.pvt = true,
 		.multi_chip = true,
-		.edsa_support = MV88E6XXX_EDSA_UNDOCUMENTED,
+		.tag_protocol = DSA_TAG_PROTO_DSA,
 		.ptp_support = true,
 		.ops = &mv88e6390x_ops,
-	},
-
-	[MV88E6393X] = {
-		.prod_num = MV88E6XXX_PORT_SWITCH_ID_PROD_6393X,
-		.family = MV88E6XXX_FAMILY_6393,
-		.name = "Marvell 88E6393X",
-		.num_databases = 4096,
-		.num_ports = 11,	/* 10 + Z80 */
-		.num_internal_phys = 9,
-		.max_vid = 8191,
-		.max_sid = 63,
-		.port_base_addr = 0x0,
-		.phy_base_addr = 0x0,
-		.global1_addr = 0x1b,
-		.global2_addr = 0x1c,
-		.age_time_coeff = 3750,
-		.g1_irqs = 10,
-		.g2_irqs = 14,
-		.atu_move_port_mask = 0x1f,
-		.pvt = true,
-		.multi_chip = true,
-		.ptp_support = true,
-		.ops = &mv88e6393x_ops,
 	},
 };
 
@@ -6321,36 +5221,14 @@ static int mv88e6xxx_detect(struct mv88e6xxx_chip *chip)
 	/* Update the compatible info with the probed one */
 	chip->info = info;
 
+	err = mv88e6xxx_g2_require(chip);
+	if (err)
+		return err;
+
 	dev_info(chip->dev, "switch 0x%x detected: %s, revision %u\n",
 		 chip->info->prod_num, chip->info->name, rev);
 
 	return 0;
-}
-
-static int mv88e6xxx_single_chip_detect(struct mv88e6xxx_chip *chip,
-					struct mdio_device *mdiodev)
-{
-	int err;
-
-	/* dual_chip takes precedence over single/multi-chip modes */
-	if (chip->info->dual_chip)
-		return -EINVAL;
-
-	/* If the mdio addr is 16 indicating the first port address of a switch
-	 * (e.g. mv88e6*41) in single chip addressing mode the device may be
-	 * configured in single chip addressing mode. Setup the smi access as
-	 * single chip addressing mode and attempt to detect the model of the
-	 * switch, if this fails the device is not configured in single chip
-	 * addressing mode.
-	 */
-	if (mdiodev->addr != 16)
-		return -EINVAL;
-
-	err = mv88e6xxx_smi_init(chip, mdiodev->bus, 0);
-	if (err)
-		return err;
-
-	return mv88e6xxx_detect(chip);
 }
 
 static struct mv88e6xxx_chip *mv88e6xxx_alloc_chip(struct device *dev)
@@ -6366,7 +5244,6 @@ static struct mv88e6xxx_chip *mv88e6xxx_alloc_chip(struct device *dev)
 	mutex_init(&chip->reg_lock);
 	INIT_LIST_HEAD(&chip->mdios);
 	idr_init(&chip->policies);
-	INIT_LIST_HEAD(&chip->msts);
 
 	return chip;
 }
@@ -6377,79 +5254,34 @@ static enum dsa_tag_protocol mv88e6xxx_get_tag_protocol(struct dsa_switch *ds,
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 
-	return chip->tag_protocol;
+	return chip->info->tag_protocol;
 }
 
-static int mv88e6xxx_change_tag_protocol(struct dsa_switch *ds,
-					 enum dsa_tag_protocol proto)
+static int mv88e6xxx_port_mdb_prepare(struct dsa_switch *ds, int port,
+				      const struct switchdev_obj_port_mdb *mdb)
 {
-	struct mv88e6xxx_chip *chip = ds->priv;
-	enum dsa_tag_protocol old_protocol;
-	struct dsa_port *cpu_dp;
-	int err;
-
-	switch (proto) {
-	case DSA_TAG_PROTO_EDSA:
-		switch (chip->info->edsa_support) {
-		case MV88E6XXX_EDSA_UNSUPPORTED:
-			return -EPROTONOSUPPORT;
-		case MV88E6XXX_EDSA_UNDOCUMENTED:
-			dev_warn(chip->dev, "Relying on undocumented EDSA tagging behavior\n");
-			fallthrough;
-		case MV88E6XXX_EDSA_SUPPORTED:
-			break;
-		}
-		break;
-	case DSA_TAG_PROTO_DSA:
-		break;
-	default:
-		return -EPROTONOSUPPORT;
-	}
-
-	old_protocol = chip->tag_protocol;
-	chip->tag_protocol = proto;
-
-	mv88e6xxx_reg_lock(chip);
-	dsa_switch_for_each_cpu_port(cpu_dp, ds) {
-		err = mv88e6xxx_setup_port_mode(chip, cpu_dp->index);
-		if (err) {
-			mv88e6xxx_reg_unlock(chip);
-			goto unwind;
-		}
-	}
-	mv88e6xxx_reg_unlock(chip);
+	/* We don't need any dynamic resource from the kernel (yet),
+	 * so skip the prepare phase.
+	 */
 
 	return 0;
-
-unwind:
-	chip->tag_protocol = old_protocol;
-
-	mv88e6xxx_reg_lock(chip);
-	dsa_switch_for_each_cpu_port_continue_reverse(cpu_dp, ds)
-		mv88e6xxx_setup_port_mode(chip, cpu_dp->index);
-	mv88e6xxx_reg_unlock(chip);
-
-	return err;
 }
 
-static int mv88e6xxx_port_mdb_add(struct dsa_switch *ds, int port,
-				  const struct switchdev_obj_port_mdb *mdb,
-				  struct dsa_db db)
+static void mv88e6xxx_port_mdb_add(struct dsa_switch *ds, int port,
+				   const struct switchdev_obj_port_mdb *mdb)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
 
 	mv88e6xxx_reg_lock(chip);
-	err = mv88e6xxx_port_db_load_purge(chip, port, mdb->addr, mdb->vid,
-					   MV88E6XXX_G1_ATU_DATA_STATE_MC_STATIC);
+	if (mv88e6xxx_port_db_load_purge(chip, port, mdb->addr, mdb->vid,
+					 MV88E6XXX_G1_ATU_DATA_STATE_MC_STATIC))
+		dev_err(ds->dev, "p%d: failed to load multicast MAC address\n",
+			port);
 	mv88e6xxx_reg_unlock(chip);
-
-	return err;
 }
 
 static int mv88e6xxx_port_mdb_del(struct dsa_switch *ds, int port,
-				  const struct switchdev_obj_port_mdb *mdb,
-				  struct dsa_db db)
+				  const struct switchdev_obj_port_mdb *mdb)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err;
@@ -6463,8 +5295,7 @@ static int mv88e6xxx_port_mdb_del(struct dsa_switch *ds, int port,
 
 static int mv88e6xxx_port_mirror_add(struct dsa_switch *ds, int port,
 				     struct dsa_mall_mirror_tc_entry *mirror,
-				     bool ingress,
-				     struct netlink_ext_ack *extack)
+				     bool ingress)
 {
 	enum mv88e6xxx_egress_direction direction = ingress ?
 						MV88E6XXX_EGRESS_DIR_INGRESS :
@@ -6473,6 +5304,9 @@ static int mv88e6xxx_port_mirror_add(struct dsa_switch *ds, int port,
 	bool other_mirrors = false;
 	int i;
 	int err;
+
+	if (!chip->info->ops->set_egress_port)
+		return -EOPNOTSUPP;
 
 	mutex_lock(&chip->reg_lock);
 	if ((ingress ? chip->ingress_dest_port : chip->egress_dest_port) !=
@@ -6488,8 +5322,9 @@ static int mv88e6xxx_port_mirror_add(struct dsa_switch *ds, int port,
 			goto out;
 		}
 
-		err = mv88e6xxx_set_egress_port(chip, direction,
-						mirror->to_local_port);
+		err = chip->info->ops->set_egress_port(chip,
+						       direction,
+						       mirror->to_local_port);
 		if (err)
 			goto out;
 	}
@@ -6522,382 +5357,37 @@ static void mv88e6xxx_port_mirror_del(struct dsa_switch *ds, int port,
 
 	/* Reset egress port when no other mirror is active */
 	if (!other_mirrors) {
-		if (mv88e6xxx_set_egress_port(chip, direction,
-					      dsa_upstream_port(ds, port)))
+		if (chip->info->ops->set_egress_port(chip,
+						     direction,
+						     dsa_upstream_port(ds,
+								       port)))
 			dev_err(ds->dev, "failed to set egress port\n");
 	}
 
 	mutex_unlock(&chip->reg_lock);
 }
 
-static int mv88e6xxx_port_pre_bridge_flags(struct dsa_switch *ds, int port,
-					   struct switchdev_brport_flags flags,
-					   struct netlink_ext_ack *extack)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	const struct mv88e6xxx_ops *ops;
-
-	if (flags.mask & ~(BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD |
-			   BR_BCAST_FLOOD | BR_PORT_LOCKED))
-		return -EINVAL;
-
-	ops = chip->info->ops;
-
-	if ((flags.mask & BR_FLOOD) && !ops->port_set_ucast_flood)
-		return -EINVAL;
-
-	if ((flags.mask & BR_MCAST_FLOOD) && !ops->port_set_mcast_flood)
-		return -EINVAL;
-
-	return 0;
-}
-
-static int mv88e6xxx_port_bridge_flags(struct dsa_switch *ds, int port,
-				       struct switchdev_brport_flags flags,
-				       struct netlink_ext_ack *extack)
+static int mv88e6xxx_port_egress_floods(struct dsa_switch *ds, int port,
+					 bool unicast, bool multicast)
 {
 	struct mv88e6xxx_chip *chip = ds->priv;
 	int err = -EOPNOTSUPP;
 
 	mv88e6xxx_reg_lock(chip);
-
-	if (flags.mask & BR_LEARNING) {
-		bool learning = !!(flags.val & BR_LEARNING);
-		u16 pav = learning ? (1 << port) : 0;
-
-		err = mv88e6xxx_port_set_assoc_vector(chip, port, pav);
-		if (err)
-			goto out;
-	}
-
-	if (flags.mask & BR_FLOOD) {
-		bool unicast = !!(flags.val & BR_FLOOD);
-
-		err = chip->info->ops->port_set_ucast_flood(chip, port,
-							    unicast);
-		if (err)
-			goto out;
-	}
-
-	if (flags.mask & BR_MCAST_FLOOD) {
-		bool multicast = !!(flags.val & BR_MCAST_FLOOD);
-
-		err = chip->info->ops->port_set_mcast_flood(chip, port,
-							    multicast);
-		if (err)
-			goto out;
-	}
-
-	if (flags.mask & BR_BCAST_FLOOD) {
-		bool broadcast = !!(flags.val & BR_BCAST_FLOOD);
-
-		err = mv88e6xxx_port_broadcast_sync(chip, port, broadcast);
-		if (err)
-			goto out;
-	}
-
-	if (flags.mask & BR_PORT_LOCKED) {
-		bool locked = !!(flags.val & BR_PORT_LOCKED);
-
-		err = mv88e6xxx_port_set_lock(chip, port, locked);
-		if (err)
-			goto out;
-	}
-out:
+	if (chip->info->ops->port_set_egress_floods)
+		err = chip->info->ops->port_set_egress_floods(chip, port,
+							      unicast,
+							      multicast);
 	mv88e6xxx_reg_unlock(chip);
 
 	return err;
-}
-
-static bool mv88e6xxx_lag_can_offload(struct dsa_switch *ds,
-				      struct dsa_lag lag,
-				      struct netdev_lag_upper_info *info,
-				      struct netlink_ext_ack *extack)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	struct dsa_port *dp;
-	int members = 0;
-
-	if (!mv88e6xxx_has_lag(chip)) {
-		NL_SET_ERR_MSG_MOD(extack, "Chip does not support LAG offload");
-		return false;
-	}
-
-	if (!lag.id)
-		return false;
-
-	dsa_lag_foreach_port(dp, ds->dst, &lag)
-		/* Includes the port joining the LAG */
-		members++;
-
-	if (members > 8) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "Cannot offload more than 8 LAG ports");
-		return false;
-	}
-
-	/* We could potentially relax this to include active
-	 * backup in the future.
-	 */
-	if (info->tx_type != NETDEV_LAG_TX_TYPE_HASH) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "Can only offload LAG using hash TX type");
-		return false;
-	}
-
-	/* Ideally we would also validate that the hash type matches
-	 * the hardware. Alas, this is always set to unknown on team
-	 * interfaces.
-	 */
-	return true;
-}
-
-static int mv88e6xxx_lag_sync_map(struct dsa_switch *ds, struct dsa_lag lag)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	struct dsa_port *dp;
-	u16 map = 0;
-	int id;
-
-	/* DSA LAG IDs are one-based, hardware is zero-based */
-	id = lag.id - 1;
-
-	/* Build the map of all ports to distribute flows destined for
-	 * this LAG. This can be either a local user port, or a DSA
-	 * port if the LAG port is on a remote chip.
-	 */
-	dsa_lag_foreach_port(dp, ds->dst, &lag)
-		map |= BIT(dsa_towards_port(ds, dp->ds->index, dp->index));
-
-	return mv88e6xxx_g2_trunk_mapping_write(chip, id, map);
-}
-
-static const u8 mv88e6xxx_lag_mask_table[8][8] = {
-	/* Row number corresponds to the number of active members in a
-	 * LAG. Each column states which of the eight hash buckets are
-	 * mapped to the column:th port in the LAG.
-	 *
-	 * Example: In a LAG with three active ports, the second port
-	 * ([2][1]) would be selected for traffic mapped to buckets
-	 * 3,4,5 (0x38).
-	 */
-	{ 0xff,    0,    0,    0,    0,    0,    0,    0 },
-	{ 0x0f, 0xf0,    0,    0,    0,    0,    0,    0 },
-	{ 0x07, 0x38, 0xc0,    0,    0,    0,    0,    0 },
-	{ 0x03, 0x0c, 0x30, 0xc0,    0,    0,    0,    0 },
-	{ 0x03, 0x0c, 0x30, 0x40, 0x80,    0,    0,    0 },
-	{ 0x03, 0x0c, 0x10, 0x20, 0x40, 0x80,    0,    0 },
-	{ 0x03, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,    0 },
-	{ 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 },
-};
-
-static void mv88e6xxx_lag_set_port_mask(u16 *mask, int port,
-					int num_tx, int nth)
-{
-	u8 active = 0;
-	int i;
-
-	num_tx = num_tx <= 8 ? num_tx : 8;
-	if (nth < num_tx)
-		active = mv88e6xxx_lag_mask_table[num_tx - 1][nth];
-
-	for (i = 0; i < 8; i++) {
-		if (BIT(i) & active)
-			mask[i] |= BIT(port);
-	}
-}
-
-static int mv88e6xxx_lag_sync_masks(struct dsa_switch *ds)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	unsigned int id, num_tx;
-	struct dsa_port *dp;
-	struct dsa_lag *lag;
-	int i, err, nth;
-	u16 mask[8];
-	u16 ivec;
-
-	/* Assume no port is a member of any LAG. */
-	ivec = BIT(mv88e6xxx_num_ports(chip)) - 1;
-
-	/* Disable all masks for ports that _are_ members of a LAG. */
-	dsa_switch_for_each_port(dp, ds) {
-		if (!dp->lag)
-			continue;
-
-		ivec &= ~BIT(dp->index);
-	}
-
-	for (i = 0; i < 8; i++)
-		mask[i] = ivec;
-
-	/* Enable the correct subset of masks for all LAG ports that
-	 * are in the Tx set.
-	 */
-	dsa_lags_foreach_id(id, ds->dst) {
-		lag = dsa_lag_by_id(ds->dst, id);
-		if (!lag)
-			continue;
-
-		num_tx = 0;
-		dsa_lag_foreach_port(dp, ds->dst, lag) {
-			if (dp->lag_tx_enabled)
-				num_tx++;
-		}
-
-		if (!num_tx)
-			continue;
-
-		nth = 0;
-		dsa_lag_foreach_port(dp, ds->dst, lag) {
-			if (!dp->lag_tx_enabled)
-				continue;
-
-			if (dp->ds == ds)
-				mv88e6xxx_lag_set_port_mask(mask, dp->index,
-							    num_tx, nth);
-
-			nth++;
-		}
-	}
-
-	for (i = 0; i < 8; i++) {
-		err = mv88e6xxx_g2_trunk_mask_write(chip, i, true, mask[i]);
-		if (err)
-			return err;
-	}
-
-	return 0;
-}
-
-static int mv88e6xxx_lag_sync_masks_map(struct dsa_switch *ds,
-					struct dsa_lag lag)
-{
-	int err;
-
-	err = mv88e6xxx_lag_sync_masks(ds);
-
-	if (!err)
-		err = mv88e6xxx_lag_sync_map(ds, lag);
-
-	return err;
-}
-
-static int mv88e6xxx_port_lag_change(struct dsa_switch *ds, int port)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
-
-	mv88e6xxx_reg_lock(chip);
-	err = mv88e6xxx_lag_sync_masks(ds);
-	mv88e6xxx_reg_unlock(chip);
-	return err;
-}
-
-static int mv88e6xxx_port_lag_join(struct dsa_switch *ds, int port,
-				   struct dsa_lag lag,
-				   struct netdev_lag_upper_info *info,
-				   struct netlink_ext_ack *extack)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err, id;
-
-	if (!mv88e6xxx_lag_can_offload(ds, lag, info, extack))
-		return -EOPNOTSUPP;
-
-	/* DSA LAG IDs are one-based */
-	id = lag.id - 1;
-
-	mv88e6xxx_reg_lock(chip);
-
-	err = mv88e6xxx_port_set_trunk(chip, port, true, id);
-	if (err)
-		goto err_unlock;
-
-	err = mv88e6xxx_lag_sync_masks_map(ds, lag);
-	if (err)
-		goto err_clear_trunk;
-
-	mv88e6xxx_reg_unlock(chip);
-	return 0;
-
-err_clear_trunk:
-	mv88e6xxx_port_set_trunk(chip, port, false, 0);
-err_unlock:
-	mv88e6xxx_reg_unlock(chip);
-	return err;
-}
-
-static int mv88e6xxx_port_lag_leave(struct dsa_switch *ds, int port,
-				    struct dsa_lag lag)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err_sync, err_trunk;
-
-	mv88e6xxx_reg_lock(chip);
-	err_sync = mv88e6xxx_lag_sync_masks_map(ds, lag);
-	err_trunk = mv88e6xxx_port_set_trunk(chip, port, false, 0);
-	mv88e6xxx_reg_unlock(chip);
-	return err_sync ? : err_trunk;
-}
-
-static int mv88e6xxx_crosschip_lag_change(struct dsa_switch *ds, int sw_index,
-					  int port)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
-
-	mv88e6xxx_reg_lock(chip);
-	err = mv88e6xxx_lag_sync_masks(ds);
-	mv88e6xxx_reg_unlock(chip);
-	return err;
-}
-
-static int mv88e6xxx_crosschip_lag_join(struct dsa_switch *ds, int sw_index,
-					int port, struct dsa_lag lag,
-					struct netdev_lag_upper_info *info,
-					struct netlink_ext_ack *extack)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err;
-
-	if (!mv88e6xxx_lag_can_offload(ds, lag, info, extack))
-		return -EOPNOTSUPP;
-
-	mv88e6xxx_reg_lock(chip);
-
-	err = mv88e6xxx_lag_sync_masks_map(ds, lag);
-	if (err)
-		goto unlock;
-
-	err = mv88e6xxx_pvt_map(chip, sw_index, port);
-
-unlock:
-	mv88e6xxx_reg_unlock(chip);
-	return err;
-}
-
-static int mv88e6xxx_crosschip_lag_leave(struct dsa_switch *ds, int sw_index,
-					 int port, struct dsa_lag lag)
-{
-	struct mv88e6xxx_chip *chip = ds->priv;
-	int err_sync, err_pvt;
-
-	mv88e6xxx_reg_lock(chip);
-	err_sync = mv88e6xxx_lag_sync_masks_map(ds, lag);
-	err_pvt = mv88e6xxx_pvt_map(chip, sw_index, port);
-	mv88e6xxx_reg_unlock(chip);
-	return err_sync ? : err_pvt;
 }
 
 static const struct dsa_switch_ops mv88e6xxx_switch_ops = {
 	.get_tag_protocol	= mv88e6xxx_get_tag_protocol,
-	.change_tag_protocol	= mv88e6xxx_change_tag_protocol,
 	.setup			= mv88e6xxx_setup,
 	.teardown		= mv88e6xxx_teardown,
-	.port_setup		= mv88e6xxx_port_setup,
-	.port_teardown		= mv88e6xxx_port_teardown,
-	.phylink_get_caps	= mv88e6xxx_get_caps,
+	.phylink_validate	= mv88e6xxx_validate,
 	.phylink_mac_link_state	= mv88e6xxx_serdes_pcs_get_state,
 	.phylink_mac_config	= mv88e6xxx_mac_config,
 	.phylink_mac_an_restart	= mv88e6xxx_serdes_pcs_an_restart,
@@ -6922,21 +5412,19 @@ static const struct dsa_switch_ops mv88e6xxx_switch_ops = {
 	.set_ageing_time	= mv88e6xxx_set_ageing_time,
 	.port_bridge_join	= mv88e6xxx_port_bridge_join,
 	.port_bridge_leave	= mv88e6xxx_port_bridge_leave,
-	.port_pre_bridge_flags	= mv88e6xxx_port_pre_bridge_flags,
-	.port_bridge_flags	= mv88e6xxx_port_bridge_flags,
+	.port_egress_floods	= mv88e6xxx_port_egress_floods,
 	.port_stp_state_set	= mv88e6xxx_port_stp_state_set,
-	.port_mst_state_set	= mv88e6xxx_port_mst_state_set,
 	.port_fast_age		= mv88e6xxx_port_fast_age,
-	.port_vlan_fast_age	= mv88e6xxx_port_vlan_fast_age,
 	.port_vlan_filtering	= mv88e6xxx_port_vlan_filtering,
+	.port_vlan_prepare	= mv88e6xxx_port_vlan_prepare,
 	.port_vlan_add		= mv88e6xxx_port_vlan_add,
 	.port_vlan_del		= mv88e6xxx_port_vlan_del,
-	.vlan_msti_set		= mv88e6xxx_vlan_msti_set,
-	.port_fdb_add		= mv88e6xxx_port_fdb_add,
-	.port_fdb_del		= mv88e6xxx_port_fdb_del,
-	.port_fdb_dump		= mv88e6xxx_port_fdb_dump,
-	.port_mdb_add		= mv88e6xxx_port_mdb_add,
-	.port_mdb_del		= mv88e6xxx_port_mdb_del,
+	.port_fdb_add           = mv88e6xxx_port_fdb_add,
+	.port_fdb_del           = mv88e6xxx_port_fdb_del,
+	.port_fdb_dump          = mv88e6xxx_port_fdb_dump,
+	.port_mdb_prepare       = mv88e6xxx_port_mdb_prepare,
+	.port_mdb_add           = mv88e6xxx_port_mdb_add,
+	.port_mdb_del           = mv88e6xxx_port_mdb_del,
 	.port_mirror_add	= mv88e6xxx_port_mirror_add,
 	.port_mirror_del	= mv88e6xxx_port_mirror_del,
 	.crosschip_bridge_join	= mv88e6xxx_crosschip_bridge_join,
@@ -6949,12 +5437,6 @@ static const struct dsa_switch_ops mv88e6xxx_switch_ops = {
 	.devlink_param_get	= mv88e6xxx_devlink_param_get,
 	.devlink_param_set	= mv88e6xxx_devlink_param_set,
 	.devlink_info_get	= mv88e6xxx_devlink_info_get,
-	.port_lag_change	= mv88e6xxx_port_lag_change,
-	.port_lag_join		= mv88e6xxx_port_lag_join,
-	.port_lag_leave		= mv88e6xxx_port_lag_leave,
-	.crosschip_lag_change	= mv88e6xxx_crosschip_lag_change,
-	.crosschip_lag_join	= mv88e6xxx_crosschip_lag_join,
-	.crosschip_lag_leave	= mv88e6xxx_crosschip_lag_leave,
 };
 
 static int mv88e6xxx_register_switch(struct mv88e6xxx_chip *chip)
@@ -6973,12 +5455,6 @@ static int mv88e6xxx_register_switch(struct mv88e6xxx_chip *chip)
 	ds->ops = &mv88e6xxx_switch_ops;
 	ds->ageing_time_min = chip->info->age_time_coeff;
 	ds->ageing_time_max = chip->info->age_time_coeff * U8_MAX;
-
-	/* Some chips support up to 32, but that requires enabling the
-	 * 5-bit port mode, which we do not support. 640k^W16 ought to
-	 * be enough for anyone.
-	 */
-	ds->num_lag_ids = mv88e6xxx_has_lag(chip) ? 16 : 0;
 
 	dev_set_drvdata(dev, ds);
 
@@ -7061,6 +5537,10 @@ static int mv88e6xxx_probe(struct mdio_device *mdiodev)
 
 	chip->info = compat_info;
 
+	err = mv88e6xxx_smi_init(chip, mdiodev->bus, mdiodev->addr);
+	if (err)
+		goto out;
+
 	chip->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(chip->reset)) {
 		err = PTR_ERR(chip->reset);
@@ -7069,24 +5549,9 @@ static int mv88e6xxx_probe(struct mdio_device *mdiodev)
 	if (chip->reset)
 		usleep_range(10000, 20000);
 
-	/* Detect if the device is configured in single chip addressing mode,
-	 * otherwise continue with address specific smi init/detection.
-	 */
-	err = mv88e6xxx_single_chip_detect(chip, mdiodev);
-	if (err) {
-		err = mv88e6xxx_smi_init(chip, mdiodev->bus, mdiodev->addr);
-		if (err)
-			goto out;
-
-		err = mv88e6xxx_detect(chip);
-		if (err)
-			goto out;
-	}
-
-	if (chip->info->edsa_support == MV88E6XXX_EDSA_SUPPORTED)
-		chip->tag_protocol = DSA_TAG_PROTO_EDSA;
-	else
-		chip->tag_protocol = DSA_TAG_PROTO_DSA;
+	err = mv88e6xxx_detect(chip);
+	if (err)
+		goto out;
 
 	mv88e6xxx_phy_init(chip);
 
@@ -7177,12 +5642,7 @@ out:
 static void mv88e6xxx_remove(struct mdio_device *mdiodev)
 {
 	struct dsa_switch *ds = dev_get_drvdata(&mdiodev->dev);
-	struct mv88e6xxx_chip *chip;
-
-	if (!ds)
-		return;
-
-	chip = ds->priv;
+	struct mv88e6xxx_chip *chip = ds->priv;
 
 	if (chip->info->ptp_support) {
 		mv88e6xxx_hwtstamp_free(chip);
@@ -7203,18 +5663,6 @@ static void mv88e6xxx_remove(struct mdio_device *mdiodev)
 		mv88e6xxx_g1_irq_free(chip);
 	else
 		mv88e6xxx_irq_poll_free(chip);
-}
-
-static void mv88e6xxx_shutdown(struct mdio_device *mdiodev)
-{
-	struct dsa_switch *ds = dev_get_drvdata(&mdiodev->dev);
-
-	if (!ds)
-		return;
-
-	dsa_switch_shutdown(ds);
-
-	dev_set_drvdata(&mdiodev->dev, NULL);
 }
 
 static const struct of_device_id mv88e6xxx_of_match[] = {
@@ -7238,7 +5686,6 @@ MODULE_DEVICE_TABLE(of, mv88e6xxx_of_match);
 static struct mdio_driver mv88e6xxx_driver = {
 	.probe	= mv88e6xxx_probe,
 	.remove = mv88e6xxx_remove,
-	.shutdown = mv88e6xxx_shutdown,
 	.mdiodrv.driver = {
 		.name = "mv88e6085",
 		.of_match_table = mv88e6xxx_of_match,

@@ -264,11 +264,16 @@ static int st33zp24_i2c_probe(struct i2c_client *client,
  * @param: client, the i2c_client description (TPM I2C description).
  * @return: 0 in case of success.
  */
-static void st33zp24_i2c_remove(struct i2c_client *client)
+static int st33zp24_i2c_remove(struct i2c_client *client)
 {
 	struct tpm_chip *chip = i2c_get_clientdata(client);
+	int ret;
 
-	st33zp24_remove(chip);
+	ret = st33zp24_remove(chip);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 static const struct i2c_device_id st33zp24_i2c_id[] = {

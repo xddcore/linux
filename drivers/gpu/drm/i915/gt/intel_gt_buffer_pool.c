@@ -3,12 +3,16 @@
  * Copyright © 2014-2018 Intel Corporation
  */
 
-#include "gem/i915_gem_internal.h"
 #include "gem/i915_gem_object.h"
 
 #include "i915_drv.h"
 #include "intel_engine_pm.h"
 #include "intel_gt_buffer_pool.h"
+
+static struct intel_gt *to_gt(struct intel_gt_buffer_pool *pool)
+{
+	return container_of(pool, struct intel_gt, buffer_pool);
+}
 
 static struct list_head *
 bucket_for_size(struct intel_gt_buffer_pool *pool, size_t sz)
@@ -94,6 +98,29 @@ static void pool_free_work(struct work_struct *wrk)
 				      round_jiffies_up_relative(HZ));
 }
 
+static int pool_active(struct i915_active *ref)
+{
+	struct intel_gt_buffer_pool_node *node =
+		container_of(ref, typeof(*node), active);
+	struct dma_resv *resv = node->obj->base.resv;
+	int err;
+
+	if (dma_resv_trylock(resv)) {
+		dma_resv_add_excl_fence(resv, NULL);
+		dma_resv_unlock(resv);
+	}
+
+	err = i915_gem_object_pin_pages(node->obj);
+	if (err)
+		return err;
+
+	/* Hide this pinned object from the shrinker until retired */
+	i915_gem_object_make_unshrinkable(node->obj);
+
+	return 0;
+}
+
+__i915_active_call
 static void pool_retire(struct i915_active *ref)
 {
 	struct intel_gt_buffer_pool_node *node =
@@ -102,13 +129,10 @@ static void pool_retire(struct i915_active *ref)
 	struct list_head *list = bucket_for_size(pool, node->obj->base.size);
 	unsigned long flags;
 
-	if (node->pinned) {
-		i915_gem_object_unpin_pages(node->obj);
+	i915_gem_object_unpin_pages(node->obj);
 
-		/* Return this object to the shrinker pool */
-		i915_gem_object_make_purgeable(node->obj);
-		node->pinned = false;
-	}
+	/* Return this object to the shrinker pool */
+	i915_gem_object_make_purgeable(node->obj);
 
 	GEM_BUG_ON(node->age);
 	spin_lock_irqsave(&pool->lock, flags);
@@ -120,24 +144,10 @@ static void pool_retire(struct i915_active *ref)
 			      round_jiffies_up_relative(HZ));
 }
 
-void intel_gt_buffer_pool_mark_used(struct intel_gt_buffer_pool_node *node)
-{
-	assert_object_held(node->obj);
-
-	if (node->pinned)
-		return;
-
-	__i915_gem_object_pin_pages(node->obj);
-	/* Hide this pinned object from the shrinker until retired */
-	i915_gem_object_make_unshrinkable(node->obj);
-	node->pinned = true;
-}
-
 static struct intel_gt_buffer_pool_node *
-node_create(struct intel_gt_buffer_pool *pool, size_t sz,
-	    enum i915_map_type type)
+node_create(struct intel_gt_buffer_pool *pool, size_t sz)
 {
-	struct intel_gt *gt = container_of(pool, struct intel_gt, buffer_pool);
+	struct intel_gt *gt = to_gt(pool);
 	struct intel_gt_buffer_pool_node *node;
 	struct drm_i915_gem_object *obj;
 
@@ -148,8 +158,7 @@ node_create(struct intel_gt_buffer_pool *pool, size_t sz,
 
 	node->age = 0;
 	node->pool = pool;
-	node->pinned = false;
-	i915_active_init(&node->active, NULL, pool_retire, 0);
+	i915_active_init(&node->active, pool_active, pool_retire);
 
 	obj = i915_gem_object_create_internal(gt->i915, sz);
 	if (IS_ERR(obj)) {
@@ -160,14 +169,12 @@ node_create(struct intel_gt_buffer_pool *pool, size_t sz,
 
 	i915_gem_object_set_readonly(obj);
 
-	node->type = type;
 	node->obj = obj;
 	return node;
 }
 
 struct intel_gt_buffer_pool_node *
-intel_gt_get_buffer_pool(struct intel_gt *gt, size_t size,
-			 enum i915_map_type type)
+intel_gt_get_buffer_pool(struct intel_gt *gt, size_t size)
 {
 	struct intel_gt_buffer_pool *pool = &gt->buffer_pool;
 	struct intel_gt_buffer_pool_node *node;
@@ -184,9 +191,6 @@ intel_gt_get_buffer_pool(struct intel_gt *gt, size_t size,
 		if (node->obj->base.size < size)
 			continue;
 
-		if (node->type != type)
-			continue;
-
 		age = READ_ONCE(node->age);
 		if (!age)
 			continue;
@@ -201,7 +205,7 @@ intel_gt_get_buffer_pool(struct intel_gt *gt, size_t size,
 	rcu_read_unlock();
 
 	if (&node->link == list) {
-		node = node_create(pool, size, type);
+		node = node_create(pool, size);
 		if (IS_ERR(node))
 			return node;
 	}
@@ -240,6 +244,8 @@ void intel_gt_fini_buffer_pool(struct intel_gt *gt)
 {
 	struct intel_gt_buffer_pool *pool = &gt->buffer_pool;
 	int n;
+
+	intel_gt_flush_buffer_pool(gt);
 
 	for (n = 0; n < ARRAY_SIZE(pool->cache_list); n++)
 		GEM_BUG_ON(!list_empty(&pool->cache_list[n]));

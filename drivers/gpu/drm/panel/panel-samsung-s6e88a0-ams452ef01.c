@@ -247,14 +247,13 @@ static int s6e88a0_ams452ef01_probe(struct mipi_dsi_device *dsi)
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
 		dev_err(dev, "Failed to attach to DSI host: %d\n", ret);
-		drm_panel_remove(&ctx->panel);
 		return ret;
 	}
 
 	return 0;
 }
 
-static void s6e88a0_ams452ef01_remove(struct mipi_dsi_device *dsi)
+static int s6e88a0_ams452ef01_remove(struct mipi_dsi_device *dsi)
 {
 	struct s6e88a0_ams452ef01 *ctx = mipi_dsi_get_drvdata(dsi);
 	int ret;
@@ -264,6 +263,8 @@ static void s6e88a0_ams452ef01_remove(struct mipi_dsi_device *dsi)
 		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
+
+	return 0;
 }
 
 static const struct of_device_id s6e88a0_ams452ef01_of_match[] = {

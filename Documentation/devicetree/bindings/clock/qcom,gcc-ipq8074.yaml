@@ -24,9 +24,6 @@ properties:
   '#clock-cells':
     const: 1
 
-  '#power-domain-cells':
-    const: 1
-
   '#reset-cells':
     const: 1
 
@@ -41,7 +38,6 @@ required:
   - compatible
   - reg
   - '#clock-cells'
-  - '#power-domain-cells'
   - '#reset-cells'
 
 additionalProperties: false
@@ -52,7 +48,6 @@ examples:
       compatible = "qcom,gcc-ipq8074";
       reg = <0x01800000 0x80000>;
       #clock-cells = <1>;
-      #power-domain-cells = <1>;
       #reset-cells = <1>;
     };
 ...

@@ -1696,7 +1696,7 @@ error_1:
 
 /* main bq2415x remove function */
 
-static void bq2415x_remove(struct i2c_client *client)
+static int bq2415x_remove(struct i2c_client *client)
 {
 	struct bq2415x_device *bq = i2c_get_clientdata(client);
 
@@ -1715,6 +1715,8 @@ static void bq2415x_remove(struct i2c_client *client)
 	dev_info(bq->dev, "driver unregistered\n");
 
 	kfree(bq->name);
+
+	return 0;
 }
 
 static const struct i2c_device_id bq2415x_i2c_id_table[] = {

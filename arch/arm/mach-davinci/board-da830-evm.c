@@ -1,11 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI DA830/OMAP L137 EVM board
  *
  * Author: Mark A. Greer <mgreer@mvista.com>
  * Derived from: arch/arm/mach-davinci/board-dm644x-evm.c
  *
- * 2007, 2009 (c) MontaVista Software, Inc.
+ * 2007, 2009 (c) MontaVista Software, Inc. This file is licensed under
+ * the terms of the GNU General Public License version 2. This program
+ * is licensed "as is" without any warranty of any kind, whether express
+ * or implied.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -34,9 +36,10 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include "common.h"
-#include "mux.h"
-#include "da8xx.h"
+#include <mach/common.h>
+#include <mach/mux.h>
+#include <mach/da8xx.h>
+
 #include "irqs.h"
 
 #define DA830_EVM_PHY_ID		""
@@ -451,10 +454,6 @@ static const struct property_entry da830_evm_i2c_eeprom_properties[] = {
 	{ }
 };
 
-static const struct software_node da830_evm_i2c_eeprom_node = {
-	.properties = da830_evm_i2c_eeprom_properties,
-};
-
 static int __init da830_evm_ui_expander_setup(struct i2c_client *client,
 		int gpio, unsigned ngpio, void *context)
 {
@@ -470,10 +469,11 @@ static int __init da830_evm_ui_expander_setup(struct i2c_client *client,
 	return 0;
 }
 
-static void da830_evm_ui_expander_teardown(struct i2c_client *client, int gpio,
+static int da830_evm_ui_expander_teardown(struct i2c_client *client, int gpio,
 		unsigned ngpio, void *context)
 {
 	gpio_free(gpio + 6);
+	return 0;
 }
 
 static struct pcf857x_platform_data __initdata da830_evm_ui_expander_info = {
@@ -485,7 +485,7 @@ static struct pcf857x_platform_data __initdata da830_evm_ui_expander_info = {
 static struct i2c_board_info __initdata da830_evm_i2c_devices[] = {
 	{
 		I2C_BOARD_INFO("24c256", 0x50),
-		.swnode = &da830_evm_i2c_eeprom_node,
+		.properties = da830_evm_i2c_eeprom_properties,
 	},
 	{
 		I2C_BOARD_INFO("tlv320aic3x", 0x18),

@@ -94,21 +94,22 @@ static void uvc_event_streaming(struct uvc_device *dev,
 				struct uvc_streaming_status *status, int len)
 {
 	if (len < 3) {
-		uvc_dbg(dev, STATUS,
-			"Invalid streaming status event received\n");
+		uvc_trace(UVC_TRACE_STATUS, "Invalid streaming status event "
+				"received.\n");
 		return;
 	}
 
 	if (status->bEvent == 0) {
 		if (len < 4)
 			return;
-		uvc_dbg(dev, STATUS, "Button (intf %u) %s len %d\n",
-			status->bOriginator,
-			status->bValue[0] ? "pressed" : "released", len);
+		uvc_trace(UVC_TRACE_STATUS, "Button (intf %u) %s len %d\n",
+			  status->bOriginator,
+			  status->bValue[0] ? "pressed" : "released", len);
 		uvc_input_report_key(dev, KEY_CAMERA, status->bValue[0]);
 	} else {
-		uvc_dbg(dev, STATUS, "Stream %u error event %02x len %d\n",
-			status->bOriginator, status->bEvent, len);
+		uvc_trace(UVC_TRACE_STATUS,
+			  "Stream %u error event %02x len %d.\n",
+			  status->bOriginator, status->bEvent, len);
 	}
 }
 
@@ -163,13 +164,14 @@ static bool uvc_event_control(struct urb *urb,
 
 	if (len < 6 || status->bEvent != 0 ||
 	    status->bAttribute >= ARRAY_SIZE(attrs)) {
-		uvc_dbg(dev, STATUS, "Invalid control status event received\n");
+		uvc_trace(UVC_TRACE_STATUS, "Invalid control status event "
+				"received.\n");
 		return false;
 	}
 
-	uvc_dbg(dev, STATUS, "Control %u/%u %s change len %d\n",
-		status->bOriginator, status->bSelector,
-		attrs[status->bAttribute], len);
+	uvc_trace(UVC_TRACE_STATUS, "Control %u/%u %s change len %d.\n",
+		  status->bOriginator, status->bSelector,
+		  attrs[status->bAttribute], len);
 
 	/* Find the control. */
 	ctrl = uvc_event_find_ctrl(dev, status, &chain);
@@ -203,13 +205,13 @@ static void uvc_status_complete(struct urb *urb)
 	case -ENOENT:		/* usb_kill_urb() called. */
 	case -ECONNRESET:	/* usb_unlink_urb() called. */
 	case -ESHUTDOWN:	/* The endpoint is being disabled. */
-	case -EPROTO:		/* Device is disconnected (reported by some host controllers). */
+	case -EPROTO:		/* Device is disconnected (reported by some
+				 * host controller). */
 		return;
 
 	default:
-		dev_warn(&dev->udev->dev,
-			 "Non-zero status (%d) in status completion handler.\n",
-			 urb->status);
+		uvc_printk(KERN_WARNING, "Non-zero status (%d) in status "
+			"completion handler.\n", urb->status);
 		return;
 	}
 
@@ -235,18 +237,18 @@ static void uvc_status_complete(struct urb *urb)
 		}
 
 		default:
-			uvc_dbg(dev, STATUS, "Unknown status event type %u\n",
-				dev->status[0]);
+			uvc_trace(UVC_TRACE_STATUS, "Unknown status event "
+				"type %u.\n", dev->status[0]);
 			break;
 		}
 	}
 
 	/* Resubmit the URB. */
 	urb->interval = dev->int_ep->desc.bInterval;
-	ret = usb_submit_urb(urb, GFP_ATOMIC);
-	if (ret < 0)
-		dev_err(&dev->udev->dev,
-			"Failed to resubmit status URB (%d).\n", ret);
+	if ((ret = usb_submit_urb(urb, GFP_ATOMIC)) < 0) {
+		uvc_printk(KERN_ERR, "Failed to resubmit status URB (%d).\n",
+			ret);
+	}
 }
 
 int uvc_status_init(struct uvc_device *dev)
@@ -272,8 +274,7 @@ int uvc_status_init(struct uvc_device *dev)
 
 	pipe = usb_rcvintpipe(dev->udev, ep->desc.bEndpointAddress);
 
-	/*
-	 * For high-speed interrupt endpoints, the bInterval value is used as
+	/* For high-speed interrupt endpoints, the bInterval value is used as
 	 * an exponent of two. Some developers forgot about it.
 	 */
 	interval = ep->desc.bInterval;

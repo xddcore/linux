@@ -235,7 +235,7 @@ static int imx_media_inherit_controls(struct imx_media_dev *imxmd,
 		if (!(spad->flags & MEDIA_PAD_FL_SINK))
 			continue;
 
-		pad = media_pad_remote_pad_first(spad);
+		pad = media_entity_remote_pad(spad);
 		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
 			continue;
 
@@ -287,8 +287,6 @@ static int imx_media_link_notify(struct media_link *link, u32 flags,
 	    !(flags & MEDIA_LNK_FL_ENABLED)) {
 		list_for_each_entry(pad_vdev, pad_vdev_list, list) {
 			vfd = pad_vdev->vdev->vfd;
-			if (!vfd->ctrl_handler)
-				continue;
 			dev_dbg(imxmd->md.dev,
 				"reset controls for %s\n",
 				vfd->entity.name);
@@ -299,8 +297,6 @@ static int imx_media_link_notify(struct media_link *link, u32 flags,
 		   (link->flags & MEDIA_LNK_FL_ENABLED)) {
 		list_for_each_entry(pad_vdev, pad_vdev_list, list) {
 			vfd = pad_vdev->vdev->vfd;
-			if (!vfd->ctrl_handler)
-				continue;
 			dev_dbg(imxmd->md.dev,
 				"refresh controls for %s\n",
 				vfd->entity.name);
@@ -381,7 +377,7 @@ struct imx_media_dev *imx_media_dev_init(struct device *dev,
 
 	INIT_LIST_HEAD(&imxmd->vdev_list);
 
-	v4l2_async_nf_init(&imxmd->notifier);
+	v4l2_async_notifier_init(&imxmd->notifier);
 
 	return imxmd;
 
@@ -405,10 +401,11 @@ int imx_media_dev_notifier_register(struct imx_media_dev *imxmd,
 
 	/* prepare the async subdev notifier and register it */
 	imxmd->notifier.ops = ops ? ops : &imx_media_notifier_ops;
-	ret = v4l2_async_nf_register(&imxmd->v4l2_dev, &imxmd->notifier);
+	ret = v4l2_async_notifier_register(&imxmd->v4l2_dev,
+					   &imxmd->notifier);
 	if (ret) {
 		v4l2_err(&imxmd->v4l2_dev,
-			 "v4l2_async_nf_register failed with %d\n", ret);
+			 "v4l2_async_notifier_register failed with %d\n", ret);
 		return ret;
 	}
 

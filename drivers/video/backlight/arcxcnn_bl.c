@@ -362,7 +362,7 @@ probe_err:
 	return ret;
 }
 
-static void arcxcnn_remove(struct i2c_client *cl)
+static int arcxcnn_remove(struct i2c_client *cl)
 {
 	struct arcxcnn *lp = i2c_get_clientdata(cl);
 
@@ -376,6 +376,8 @@ static void arcxcnn_remove(struct i2c_client *cl)
 	lp->bl->props.brightness = 0;
 
 	backlight_update_status(lp->bl);
+
+	return 0;
 }
 
 static const struct of_device_id arcxcnn_dt_ids[] = {

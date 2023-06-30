@@ -39,12 +39,6 @@ call.
 User-space tools can get the kernel name, host name, kernel release
 number, kernel version, architecture name and OS type from it.
 
-(uts_namespace, name)
----------------------
-
-Offset of the name's member. Crash Utility and Makedumpfile get
-the start address of the init_uts_ns.name from this.
-
 node_online_map
 ---------------
 
@@ -200,7 +194,7 @@ prb
 
 A pointer to the printk ringbuffer (struct printk_ringbuffer). This
 may be pointing to the static boot ringbuffer or the dynamically
-allocated ringbuffer, depending on when the core dump occurred.
+allocated ringbuffer, depending on when the the core dump occurred.
 Used by user-space tools to read the active kernel log buffer.
 
 printk_rb_static
@@ -493,14 +487,6 @@ TTBR1_EL1 is the table base address register specified by ARMv8-A
 architecture which is used to lookup the page-tables for the Virtual
 addresses in the higher VA range (refer to ARMv8 ARM document for
 more details).
-
-MODULES_VADDR|MODULES_END|VMALLOC_START|VMALLOC_END|VMEMMAP_START|VMEMMAP_END
------------------------------------------------------------------------------
-
-Used to get the correct ranges:
-	MODULES_VADDR ~ MODULES_END-1 : Kernel module space.
-	VMALLOC_START ~ VMALLOC_END-1 : vmalloc() / ioremap() space.
-	VMEMMAP_START ~ VMEMMAP_END-1 : vmemmap region, used for struct page array.
 
 arm
 ===

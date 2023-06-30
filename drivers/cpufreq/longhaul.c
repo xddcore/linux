@@ -668,9 +668,9 @@ static acpi_status longhaul_walk_callback(acpi_handle obj_handle,
 					  u32 nesting_level,
 					  void *context, void **return_value)
 {
-	struct acpi_device *d = acpi_fetch_acpi_dev(obj_handle);
+	struct acpi_device *d;
 
-	if (!d)
+	if (acpi_bus_get_device(obj_handle, &d))
 		return 0;
 
 	*return_value = acpi_driver_data(d);
@@ -942,6 +942,8 @@ static int __init longhaul_init(void)
 		return cpufreq_register_driver(&longhaul_driver);
 	case 10:
 		pr_err("Use acpi-cpufreq driver for VIA C7\n");
+	default:
+		;
 	}
 
 	return -ENODEV;

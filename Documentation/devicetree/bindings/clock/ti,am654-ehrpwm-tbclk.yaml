@@ -12,10 +12,7 @@ maintainers:
 properties:
   compatible:
     items:
-      - enum:
-          - ti,am654-ehrpwm-tbclk
-          - ti,am64-epwm-tbclk
-          - ti,am62-epwm-tbclk
+      - const: ti,am654-ehrpwm-tbclk
       - const: syscon
 
   "#clock-cells":

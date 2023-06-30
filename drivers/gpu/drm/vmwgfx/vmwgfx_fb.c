@@ -26,7 +26,6 @@
  *
  **************************************************************************/
 
-#include <linux/fb.h>
 #include <linux/pci.h>
 
 #include <drm/drm_fourcc.h>
@@ -196,6 +195,7 @@ static void vmw_fb_dirty_flush(struct work_struct *work)
 	if (!cur_fb)
 		goto out_unlock;
 
+	(void) ttm_read_lock(&vmw_priv->reservation_sem, false);
 	(void) ttm_bo_reserve(&vbo->base, false, false, NULL);
 	virtual = vmw_bo_map_and_cache(vbo);
 	if (!virtual)
@@ -254,10 +254,11 @@ static void vmw_fb_dirty_flush(struct work_struct *work)
 
 out_unreserve:
 	ttm_bo_unreserve(&vbo->base);
+	ttm_read_unlock(&vmw_priv->reservation_sem);
 	if (w && h) {
 		WARN_ON_ONCE(par->set_fb->funcs->dirty(cur_fb, NULL, 0, 0,
 						       &clip, 1));
-		vmw_cmd_flush(vmw_priv, false);
+		vmw_fifo_flush(vmw_priv, false);
 	}
 out_unlock:
 	mutex_unlock(&par->bo_mutex);
@@ -317,18 +318,19 @@ static int vmw_fb_pan_display(struct fb_var_screeninfo *var,
 	return 0;
 }
 
-static void vmw_deferred_io(struct fb_info *info, struct list_head *pagereflist)
+static void vmw_deferred_io(struct fb_info *info,
+			    struct list_head *pagelist)
 {
 	struct vmw_fb_par *par = info->par;
 	unsigned long start, end, min, max;
 	unsigned long flags;
-	struct fb_deferred_io_pageref *pageref;
+	struct page *page;
 	int y1, y2;
 
 	min = ULONG_MAX;
 	max = 0;
-	list_for_each_entry(pageref, pagereflist, list) {
-		start = pageref->offset;
+	list_for_each_entry(page, pagelist, lru) {
+		start = page->index << PAGE_SHIFT;
 		end = start + PAGE_SIZE - 1;
 		min = min(min, start);
 		max = max(max, end);
@@ -394,15 +396,28 @@ static int vmw_fb_create_bo(struct vmw_private *vmw_priv,
 	struct vmw_buffer_object *vmw_bo;
 	int ret;
 
-	ret = vmw_bo_create(vmw_priv, size,
+	(void) ttm_write_lock(&vmw_priv->reservation_sem, false);
+
+	vmw_bo = kmalloc(sizeof(*vmw_bo), GFP_KERNEL);
+	if (!vmw_bo) {
+		ret = -ENOMEM;
+		goto err_unlock;
+	}
+
+	ret = vmw_bo_init(vmw_priv, vmw_bo, size,
 			      &vmw_sys_placement,
-			      false, false,
-			      &vmw_bo_bo_free, &vmw_bo);
+			      false,
+			      &vmw_bo_bo_free);
 	if (unlikely(ret != 0))
-		return ret;
+		goto err_unlock; /* init frees the buffer on failure */
 
 	*out = vmw_bo;
+	ttm_write_unlock(&vmw_priv->reservation_sem);
 
+	return 0;
+
+err_unlock:
+	ttm_write_unlock(&vmw_priv->reservation_sem);
 	return ret;
 }
 
@@ -466,7 +481,7 @@ static int vmw_fb_kms_detach(struct vmw_fb_par *par,
 			DRM_ERROR("Could not unset a mode.\n");
 			return ret;
 		}
-		drm_mode_destroy(&par->vmw_priv->drm, par->set_mode);
+		drm_mode_destroy(par->vmw_priv->dev, par->set_mode);
 		par->set_mode = NULL;
 	}
 
@@ -552,7 +567,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 	struct drm_display_mode *mode;
 	int ret;
 
-	mode = drm_mode_duplicate(&vmw_priv->drm, &new_mode);
+	mode = drm_mode_duplicate(vmw_priv->dev, &new_mode);
 	if (!mode) {
 		DRM_ERROR("Could not create new fb mode.\n");
 		return -ENOMEM;
@@ -566,7 +581,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 					mode->hdisplay *
 					DIV_ROUND_UP(var->bits_per_pixel, 8),
 					mode->vdisplay)) {
-		drm_mode_destroy(&vmw_priv->drm, mode);
+		drm_mode_destroy(vmw_priv->dev, mode);
 		return -EINVAL;
 	}
 
@@ -600,7 +615,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 
 out_unlock:
 	if (par->set_mode)
-		drm_mode_destroy(&vmw_priv->drm, par->set_mode);
+		drm_mode_destroy(vmw_priv->dev, par->set_mode);
 	par->set_mode = mode;
 
 	mutex_unlock(&par->bo_mutex);
@@ -619,12 +634,11 @@ static const struct fb_ops vmw_fb_ops = {
 	.fb_imageblit = vmw_fb_imageblit,
 	.fb_pan_display = vmw_fb_pan_display,
 	.fb_blank = vmw_fb_blank,
-	.fb_mmap = fb_deferred_io_mmap,
 };
 
 int vmw_fb_init(struct vmw_private *vmw_priv)
 {
-	struct device *device = vmw_priv->drm.dev;
+	struct device *device = &vmw_priv->dev->pdev->dev;
 	struct vmw_fb_par *par;
 	struct fb_info *info;
 	unsigned fb_width, fb_height;

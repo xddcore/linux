@@ -15,7 +15,6 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/mmc_spi.h>
 #include <linux/mmc/host.h>
-#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/fsl_devices.h>
 
@@ -162,8 +161,6 @@ static struct spi_board_info mpc832x_spi_boardinfo = {
 
 static int __init mpc832x_spi_init(void)
 {
-	struct device_node *np;
-
 	par_io_config_pin(3,  0, 3, 0, 1, 0); /* SPI1 MOSI, I/O */
 	par_io_config_pin(3,  1, 3, 0, 1, 0); /* SPI1 MISO, I/O */
 	par_io_config_pin(3,  2, 3, 0, 1, 0); /* SPI1 CLK,  I/O */
@@ -177,9 +174,7 @@ static int __init mpc832x_spi_init(void)
 	 * Don't bother with legacy stuff when device tree contains
 	 * mmc-spi-slot node.
 	 */
-	np = of_find_compatible_node(NULL, NULL, "mmc-spi-slot");
-	of_node_put(np);
-	if (np)
+	if (of_find_compatible_node(NULL, NULL, "mmc-spi-slot"))
 		return 0;
 	return fsl_spi_init(&mpc832x_spi_boardinfo, 1, mpc83xx_spi_cs_control);
 }
@@ -224,7 +219,6 @@ define_machine(mpc832x_rdb) {
 	.name		= "MPC832x RDB",
 	.probe		= mpc832x_rdb_probe,
 	.setup_arch	= mpc832x_rdb_setup_arch,
-	.discover_phbs  = mpc83xx_setup_pci,
 	.init_IRQ	= mpc83xx_ipic_init_IRQ,
 	.get_irq	= ipic_get_irq,
 	.restart	= mpc83xx_restart,

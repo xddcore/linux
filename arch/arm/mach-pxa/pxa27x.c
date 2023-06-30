@@ -23,18 +23,18 @@
 #include <linux/irq.h>
 #include <linux/platform_data/i2c-pxa.h>
 #include <linux/platform_data/mmp_dma.h>
-#include <linux/soc/pxa/cpu.h>
 
 #include <asm/mach/map.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/suspend.h>
-#include "irqs.h"
+#include <mach/irqs.h>
 #include "pxa27x.h"
-#include "reset.h"
+#include <mach/reset.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
 #include "pm.h"
-#include "addr-map.h"
-#include "smemc.h"
+#include <mach/dma.h>
+#include <mach/smemc.h>
 
 #include "generic.h"
 #include "devices.h"
@@ -337,7 +337,7 @@ static int __init pxa27x_init(void)
 
 	if (cpu_is_pxa27x()) {
 
-		pxa_register_wdt(RCSR);
+		reset_status = RCSR;
 
 		pxa27x_init_pm();
 

@@ -257,7 +257,7 @@ static const struct regmap_config max2175_regmap_config = {
 	.reg_defaults = max2175_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(max2175_reg_defaults),
 	.volatile_table = &max2175_volatile_regs,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_FLAT,
 };
 
 struct max2175 {
@@ -1125,6 +1125,7 @@ static int max2175_g_frequency(struct v4l2_subdev *sd,
 			       struct v4l2_frequency *vf)
 {
 	struct max2175 *ctx = max2175_from_sd(sd);
+	int ret = 0;
 
 	if (vf->tuner != 0)
 		return -EINVAL;
@@ -1133,7 +1134,7 @@ static int max2175_g_frequency(struct v4l2_subdev *sd,
 	vf->type = V4L2_TUNER_RF;
 	vf->frequency = ctx->freq;
 
-	return 0;
+	return ret;
 }
 
 static int max2175_enum_freq_bands(struct v4l2_subdev *sd,
@@ -1403,13 +1404,15 @@ err_reg:
 	return ret;
 }
 
-static void max2175_remove(struct i2c_client *client)
+static int max2175_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct max2175 *ctx = max2175_from_sd(sd);
 
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 	v4l2_async_unregister_subdev(sd);
+
+	return 0;
 }
 
 static const struct i2c_device_id max2175_id[] = {

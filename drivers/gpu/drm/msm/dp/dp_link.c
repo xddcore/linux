@@ -36,7 +36,6 @@ struct dp_link_request {
 struct dp_link_private {
 	u32 prev_sink_count;
 	struct device *dev;
-	struct drm_device *drm_dev;
 	struct drm_dp_aux *aux;
 	struct dp_link dp_link;
 
@@ -129,14 +128,14 @@ static int dp_link_parse_audio_channel_period(struct dp_link_private *link)
 		goto exit;
 
 	req->test_audio_period_ch_1 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_1 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_1 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH2);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_2 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_2 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_2 = 0x%x\n", ret);
 
 	/* TEST_AUDIO_PERIOD_CH_3 (Byte 0x275) */
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH3);
@@ -144,42 +143,42 @@ static int dp_link_parse_audio_channel_period(struct dp_link_private *link)
 		goto exit;
 
 	req->test_audio_period_ch_3 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_3 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_3 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH4);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_4 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_4 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_4 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH5);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_5 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_5 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_5 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH6);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_6 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_6 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_6 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH7);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_7 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_7 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_7 = 0x%x\n", ret);
 
 	ret = dp_link_get_period(link, DP_TEST_AUDIO_PERIOD_CH8);
 	if (ret == -EINVAL)
 		goto exit;
 
 	req->test_audio_period_ch_8 = ret;
-	drm_dbg_dp(link->drm_dev, "test_audio_period_ch_8 = 0x%x\n", ret);
+	DRM_DEBUG_DP("test_audio_period_ch_8 = 0x%x\n", ret);
 exit:
 	return ret;
 }
@@ -206,7 +205,7 @@ static int dp_link_parse_audio_pattern_type(struct dp_link_private *link)
 	}
 
 	link->dp_link.test_audio.test_audio_pattern_type = data;
-	drm_dbg_dp(link->drm_dev, "audio pattern type = 0x%x\n", data);
+	DRM_DEBUG_DP("audio pattern type = 0x%x\n", data);
 exit:
 	return ret;
 }
@@ -247,9 +246,8 @@ static int dp_link_parse_audio_mode(struct dp_link_private *link)
 
 	link->dp_link.test_audio.test_audio_sampling_rate = sampling_rate;
 	link->dp_link.test_audio.test_audio_channel_count = channel_count;
-	drm_dbg_dp(link->drm_dev,
-			"sampling_rate = 0x%x, channel_count = 0x%x\n",
-			sampling_rate, channel_count);
+	DRM_DEBUG_DP("sampling_rate = 0x%x, channel_count = 0x%x\n",
+					sampling_rate, channel_count);
 exit:
 	return ret;
 }
@@ -366,7 +364,7 @@ static int dp_link_parse_timing_params3(struct dp_link_private *link,
 }
 
 /**
- * dp_link_parse_video_pattern_params() - parses video pattern parameters from DPCD
+ * dp_parse_video_pattern_params() - parses video pattern parameters from DPCD
  * @link: Display Port Driver data
  *
  * Returns 0 if it successfully parses the video link pattern and the link
@@ -488,8 +486,7 @@ static int dp_link_parse_video_pattern_params(struct dp_link_private *link)
 		return ret;
 	}
 
-	drm_dbg_dp(link->drm_dev,
-		"link video pattern = 0x%x\n"
+	DRM_DEBUG_DP("link video pattern = 0x%x\n"
 		"link dynamic range = 0x%x\n"
 		"link bit depth = 0x%x\n"
 		"TEST_H_TOTAL = %d, TEST_V_TOTAL = %d\n"
@@ -546,8 +543,7 @@ static int dp_link_parse_link_training_params(struct dp_link_private *link)
 	}
 
 	link->request.test_link_rate = bp;
-	drm_dbg_dp(link->drm_dev, "link rate = 0x%x\n",
-				link->request.test_link_rate);
+	DRM_DEBUG_DP("link rate = 0x%x\n", link->request.test_link_rate);
 
 	rlen = drm_dp_dpcd_readb(link->aux, DP_TEST_LANE_COUNT, &bp);
 	if (rlen < 0) {
@@ -562,13 +558,12 @@ static int dp_link_parse_link_training_params(struct dp_link_private *link)
 	}
 
 	link->request.test_lane_count = bp;
-	drm_dbg_dp(link->drm_dev, "lane count = 0x%x\n",
-				link->request.test_lane_count);
+	DRM_DEBUG_DP("lane count = 0x%x\n", link->request.test_lane_count);
 	return 0;
 }
 
 /**
- * dp_link_parse_phy_test_params() - parses the phy link parameters
+ * dp_parse_phy_test_params() - parses the phy link parameters
  * @link: Display Port Driver data
  *
  * Parses the DPCD (Byte 0x248) for the DP PHY link pattern that is being
@@ -588,7 +583,7 @@ static int dp_link_parse_phy_test_params(struct dp_link_private *link)
 
 	link->dp_link.phy_params.phy_test_pattern_sel = data & 0x07;
 
-	drm_dbg_dp(link->drm_dev, "phy_test_pattern_sel = 0x%x\n", data);
+	DRM_DEBUG_DP("phy_test_pattern_sel = 0x%x\n", data);
 
 	switch (data) {
 	case DP_PHY_TEST_PATTERN_SEL_MASK:
@@ -644,10 +639,10 @@ static int dp_link_parse_request(struct dp_link_private *link)
 		return rlen;
 	}
 
-	drm_dbg_dp(link->drm_dev, "device service irq vector = 0x%x\n", data);
+	DRM_DEBUG_DP("device service irq vector = 0x%x\n", data);
 
 	if (!(data & DP_AUTOMATED_TEST_REQUEST)) {
-		drm_dbg_dp(link->drm_dev, "no test requested\n");
+		DRM_DEBUG_DP("no test requested\n");
 		return 0;
 	}
 
@@ -662,11 +657,11 @@ static int dp_link_parse_request(struct dp_link_private *link)
 	}
 
 	if (!data || (data == DP_TEST_LINK_FAUX_PATTERN)) {
-		drm_dbg_dp(link->drm_dev, "link 0x%x not supported\n", data);
+		DRM_DEBUG_DP("link 0x%x not supported\n", data);
 		goto end;
 	}
 
-	drm_dbg_dp(link->drm_dev, "Test:(0x%x) requested\n", data);
+	DRM_DEBUG_DP("Test:(0x%x) requested\n", data);
 	link->request.test_requested = data;
 	if (link->request.test_requested == DP_TEST_LINK_PHY_TEST_PATTERN) {
 		ret = dp_link_parse_phy_test_params(link);
@@ -737,30 +732,23 @@ static int dp_link_parse_sink_count(struct dp_link *dp_link)
 	link->dp_link.sink_count =
 		DP_GET_SINK_COUNT(link->dp_link.sink_count);
 
-	drm_dbg_dp(link->drm_dev, "sink_count = 0x%x, cp_ready = 0x%x\n",
-				link->dp_link.sink_count, cp_ready);
+	DRM_DEBUG_DP("sink_count = 0x%x, cp_ready = 0x%x\n",
+		link->dp_link.sink_count, cp_ready);
 	return 0;
 }
 
-static int dp_link_parse_sink_status_field(struct dp_link_private *link)
+static void dp_link_parse_sink_status_field(struct dp_link_private *link)
 {
 	int len = 0;
 
 	link->prev_sink_count = link->dp_link.sink_count;
-	len = dp_link_parse_sink_count(&link->dp_link);
-	if (len < 0) {
-		DRM_ERROR("DP parse sink count failed\n");
-		return len;
-	}
+	dp_link_parse_sink_count(&link->dp_link);
 
 	len = drm_dp_dpcd_read_link_status(link->aux,
 		link->link_status);
-	if (len < DP_LINK_STATUS_SIZE) {
+	if (len < DP_LINK_STATUS_SIZE)
 		DRM_ERROR("DP link status read failed\n");
-		return len;
-	}
-
-	return dp_link_parse_request(link);
+	dp_link_parse_request(link);
 }
 
 /**
@@ -779,14 +767,13 @@ static int dp_link_process_link_training_request(struct dp_link_private *link)
 	if (link->request.test_requested != DP_TEST_LINK_TRAINING)
 		return -EINVAL;
 
-	drm_dbg_dp(link->drm_dev,
-			"Test:0x%x link rate = 0x%x, lane count = 0x%x\n",
+	DRM_DEBUG_DP("Test:0x%x link rate = 0x%x, lane count = 0x%x\n",
 			DP_TEST_LINK_TRAINING,
 			link->request.test_link_rate,
 			link->request.test_lane_count);
 
 	link->dp_link.link_params.num_lanes = link->request.test_lane_count;
-	link->dp_link.link_params.rate =
+	link->dp_link.link_params.rate = 
 		drm_dp_bw_code_to_link_rate(link->request.test_link_rate);
 
 	return 0;
@@ -856,15 +843,17 @@ bool dp_link_send_edid_checksum(struct dp_link *dp_link, u8 checksum)
 	return ret == 1;
 }
 
-static void dp_link_parse_vx_px(struct dp_link_private *link)
+static int dp_link_parse_vx_px(struct dp_link_private *link)
 {
-	drm_dbg_dp(link->drm_dev, "vx: 0=%d, 1=%d, 2=%d, 3=%d\n",
+	int ret = 0;
+
+	DRM_DEBUG_DP("vx: 0=%d, 1=%d, 2=%d, 3=%d\n",
 		drm_dp_get_adjust_request_voltage(link->link_status, 0),
 		drm_dp_get_adjust_request_voltage(link->link_status, 1),
 		drm_dp_get_adjust_request_voltage(link->link_status, 2),
 		drm_dp_get_adjust_request_voltage(link->link_status, 3));
 
-	drm_dbg_dp(link->drm_dev, "px: 0=%d, 1=%d, 2=%d, 3=%d\n",
+	DRM_DEBUG_DP("px: 0=%d, 1=%d, 2=%d, 3=%d\n",
 		drm_dp_get_adjust_request_pre_emphasis(link->link_status, 0),
 		drm_dp_get_adjust_request_pre_emphasis(link->link_status, 1),
 		drm_dp_get_adjust_request_pre_emphasis(link->link_status, 2),
@@ -874,8 +863,7 @@ static void dp_link_parse_vx_px(struct dp_link_private *link)
 	 * Update the voltage and pre-emphasis levels as per DPCD request
 	 * vector.
 	 */
-	drm_dbg_dp(link->drm_dev,
-			 "Current: v_level = 0x%x, p_level = 0x%x\n",
+	DRM_DEBUG_DP("Current: v_level = 0x%x, p_level = 0x%x\n",
 			link->dp_link.phy_params.v_level,
 			link->dp_link.phy_params.p_level);
 	link->dp_link.phy_params.v_level =
@@ -885,10 +873,11 @@ static void dp_link_parse_vx_px(struct dp_link_private *link)
 
 	link->dp_link.phy_params.p_level >>= DP_TRAIN_PRE_EMPHASIS_SHIFT;
 
-	drm_dbg_dp(link->drm_dev,
-			"Requested: v_level = 0x%x, p_level = 0x%x\n",
+	DRM_DEBUG_DP("Requested: v_level = 0x%x, p_level = 0x%x\n",
 			link->dp_link.phy_params.v_level,
 			link->dp_link.phy_params.p_level);
+
+	return ret;
 }
 
 /**
@@ -902,8 +891,10 @@ static void dp_link_parse_vx_px(struct dp_link_private *link)
 static int dp_link_process_phy_test_pattern_request(
 		struct dp_link_private *link)
 {
+	int ret = 0;
+
 	if (!(link->request.test_requested & DP_TEST_LINK_PHY_TEST_PATTERN)) {
-		drm_dbg_dp(link->drm_dev, "no phy test\n");
+		DRM_DEBUG_DP("no phy test\n");
 		return -EINVAL;
 	}
 
@@ -915,13 +906,11 @@ static int dp_link_process_phy_test_pattern_request(
 		return -EINVAL;
 	}
 
-	drm_dbg_dp(link->drm_dev,
-			"Current: rate = 0x%x, lane count = 0x%x\n",
+	DRM_DEBUG_DP("Current: rate = 0x%x, lane count = 0x%x\n",
 			link->dp_link.link_params.rate,
 			link->dp_link.link_params.num_lanes);
 
-	drm_dbg_dp(link->drm_dev,
-			"Requested: rate = 0x%x, lane count = 0x%x\n",
+	DRM_DEBUG_DP("Requested: rate = 0x%x, lane count = 0x%x\n",
 			link->request.test_link_rate,
 			link->request.test_lane_count);
 
@@ -929,9 +918,12 @@ static int dp_link_process_phy_test_pattern_request(
 	link->dp_link.link_params.rate =
 		drm_dp_bw_code_to_link_rate(link->request.test_link_rate);
 
-	dp_link_parse_vx_px(link);
+	ret = dp_link_parse_vx_px(link);
 
-	return 0;
+	if (ret)
+		DRM_ERROR("parse_vx_px failed. ret=%d\n", ret);
+
+	return ret;
 }
 
 static u8 get_link_status(const u8 link_status[DP_LINK_STATUS_SIZE], int r)
@@ -952,24 +944,24 @@ static u8 get_link_status(const u8 link_status[DP_LINK_STATUS_SIZE], int r)
  */
 static int dp_link_process_link_status_update(struct dp_link_private *link)
 {
-	bool channel_eq_done = drm_dp_channel_eq_ok(link->link_status,
-			link->dp_link.link_params.num_lanes);
+       bool channel_eq_done = drm_dp_channel_eq_ok(link->link_status,
+                       link->dp_link.link_params.num_lanes);
 
-	bool clock_recovery_done = drm_dp_clock_recovery_ok(link->link_status,
-			link->dp_link.link_params.num_lanes);
+       bool clock_recovery_done = drm_dp_clock_recovery_ok(link->link_status,
+                       link->dp_link.link_params.num_lanes);
 
-	drm_dbg_dp(link->drm_dev,
-		       "channel_eq_done = %d, clock_recovery_done = %d\n",
+       DRM_DEBUG_DP("channel_eq_done = %d, clock_recovery_done = %d\n",
                         channel_eq_done, clock_recovery_done);
 
-	if (channel_eq_done && clock_recovery_done)
-		return -EINVAL;
+       if (channel_eq_done && clock_recovery_done)
+               return -EINVAL;
 
-	return 0;
+
+       return 0;
 }
 
 /**
- * dp_link_process_ds_port_status_change() - process port status changes
+ * dp_link_process_downstream_port_status_change() - process port status changes
  * @link: Display Port Driver data
  *
  * This function will handle downstream port updates that are initiated by
@@ -1040,36 +1032,47 @@ int dp_link_process_request(struct dp_link *dp_link)
 
 	dp_link_reset_data(link);
 
-	ret = dp_link_parse_sink_status_field(link);
-	if (ret)
-		return ret;
+	dp_link_parse_sink_status_field(link);
 
 	if (link->request.test_requested == DP_TEST_LINK_EDID_READ) {
 		dp_link->sink_request |= DP_TEST_LINK_EDID_READ;
-	} else if (!dp_link_process_ds_port_status_change(link)) {
-		dp_link->sink_request |= DS_PORT_STATUS_CHANGED;
-	} else if (!dp_link_process_link_training_request(link)) {
-		dp_link->sink_request |= DP_TEST_LINK_TRAINING;
-	} else if (!dp_link_process_phy_test_pattern_request(link)) {
-		dp_link->sink_request |= DP_TEST_LINK_PHY_TEST_PATTERN;
-	} else {
-		ret = dp_link_process_link_status_update(link);
-		if (!ret) {
-			dp_link->sink_request |= DP_LINK_STATUS_UPDATED;
-		} else {
-			if (dp_link_is_video_pattern_requested(link)) {
-				ret = 0;
-				dp_link->sink_request |= DP_TEST_LINK_VIDEO_PATTERN;
-			}
-			if (dp_link_is_audio_pattern_requested(link)) {
-				dp_link->sink_request |= DP_TEST_LINK_AUDIO_PATTERN;
-				ret = -EINVAL;
-			}
-		}
+		return ret;
 	}
 
-	drm_dbg_dp(link->drm_dev, "sink request=%#x",
-				dp_link->sink_request);
+	ret = dp_link_process_ds_port_status_change(link);
+	if (!ret) {
+		dp_link->sink_request |= DS_PORT_STATUS_CHANGED;
+		return ret;
+	}
+
+	ret = dp_link_process_link_training_request(link);
+	if (!ret) {
+		dp_link->sink_request |= DP_TEST_LINK_TRAINING;
+		return ret;
+	}
+
+	ret = dp_link_process_phy_test_pattern_request(link);
+	if (!ret) {
+		dp_link->sink_request |= DP_TEST_LINK_PHY_TEST_PATTERN;
+		return ret;
+	}
+
+	ret = dp_link_process_link_status_update(link);
+	if (!ret) {
+		dp_link->sink_request |= DP_LINK_STATUS_UPDATED;
+		return ret;
+	}
+
+	if (dp_link_is_video_pattern_requested(link)) {
+		ret = 0;
+		dp_link->sink_request |= DP_TEST_LINK_VIDEO_PATTERN;
+	}
+
+	if (dp_link_is_audio_pattern_requested(link)) {
+		dp_link->sink_request |= DP_TEST_LINK_AUDIO_PATTERN;
+		return -EINVAL;
+	}
+
 	return ret;
 }
 
@@ -1101,22 +1104,18 @@ int dp_link_adjust_levels(struct dp_link *dp_link, u8 *link_status)
 {
 	int i;
 	int v_max = 0, p_max = 0;
-	struct dp_link_private *link;
 
 	if (!dp_link) {
 		DRM_ERROR("invalid input\n");
 		return -EINVAL;
 	}
 
-	link = container_of(dp_link, struct dp_link_private, dp_link);
-
 	/* use the max level across lanes */
 	for (i = 0; i < dp_link->link_params.num_lanes; i++) {
 		u8 data_v = drm_dp_get_adjust_request_voltage(link_status, i);
 		u8 data_p = drm_dp_get_adjust_request_pre_emphasis(link_status,
 									 i);
-		drm_dbg_dp(link->drm_dev,
-				"lane=%d req_vol_swing=%d req_pre_emphasis=%d\n",
+		DRM_DEBUG_DP("lane=%d req_vol_swing=%d req_pre_emphasis=%d\n",
 				i, data_v, data_p);
 		if (v_max < data_v)
 			v_max = data_v;
@@ -1132,16 +1131,14 @@ int dp_link_adjust_levels(struct dp_link *dp_link, u8 *link_status)
 	 * the allowable range.
 	 */
 	if (dp_link->phy_params.v_level > DP_TRAIN_VOLTAGE_SWING_MAX) {
-		drm_dbg_dp(link->drm_dev,
-			"Requested vSwingLevel=%d, change to %d\n",
+		DRM_DEBUG_DP("Requested vSwingLevel=%d, change to %d\n",
 			dp_link->phy_params.v_level,
 			DP_TRAIN_VOLTAGE_SWING_MAX);
 		dp_link->phy_params.v_level = DP_TRAIN_VOLTAGE_SWING_MAX;
 	}
 
 	if (dp_link->phy_params.p_level > DP_TRAIN_PRE_EMPHASIS_MAX) {
-		drm_dbg_dp(link->drm_dev,
-			"Requested preEmphasisLevel=%d, change to %d\n",
+		DRM_DEBUG_DP("Requested preEmphasisLevel=%d, change to %d\n",
 			dp_link->phy_params.p_level,
 			DP_TRAIN_PRE_EMPHASIS_MAX);
 		dp_link->phy_params.p_level = DP_TRAIN_PRE_EMPHASIS_MAX;
@@ -1150,14 +1147,13 @@ int dp_link_adjust_levels(struct dp_link *dp_link, u8 *link_status)
 	if ((dp_link->phy_params.p_level > DP_TRAIN_PRE_EMPHASIS_LVL_1)
 		&& (dp_link->phy_params.v_level ==
 			DP_TRAIN_VOLTAGE_SWING_LVL_2)) {
-		drm_dbg_dp(link->drm_dev,
-			"Requested preEmphasisLevel=%d, change to %d\n",
+		DRM_DEBUG_DP("Requested preEmphasisLevel=%d, change to %d\n",
 			dp_link->phy_params.p_level,
 			DP_TRAIN_PRE_EMPHASIS_LVL_1);
 		dp_link->phy_params.p_level = DP_TRAIN_PRE_EMPHASIS_LVL_1;
 	}
 
-	drm_dbg_dp(link->drm_dev, "adjusted: v_level=%d, p_level=%d\n",
+	DRM_DEBUG_DP("adjusted: v_level=%d, p_level=%d\n",
 		dp_link->phy_params.v_level, dp_link->phy_params.p_level);
 
 	return 0;

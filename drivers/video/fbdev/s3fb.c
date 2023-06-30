@@ -11,7 +11,6 @@
  * which is based on the code of neofb.
  */
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -249,7 +248,7 @@ static int s3fb_setup_ddc_bus(struct fb_info *info)
 {
 	struct s3fb_info *par = info->par;
 
-	strscpy(par->ddc_adapter.name, info->fix.id,
+	strlcpy(par->ddc_adapter.name, info->fix.id,
 		sizeof(par->ddc_adapter.name));
 	par->ddc_adapter.owner		= THIS_MODULE;
 	par->ddc_adapter.class		= I2C_CLASS_DDC;
@@ -549,9 +548,6 @@ static int s3fb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	struct s3fb_info *par = info->par;
 	int rv, mem, step;
 	u16 m, n, r;
-
-	if (!var->pixclock)
-		return -EINVAL;
 
 	/* Find appropriate format */
 	rv = svga_match_format (s3fb_formats, var, NULL);
@@ -1131,10 +1127,6 @@ static int s3_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		dev_info(&(dev->dev), "ignoring secondary device\n");
 		return -ENODEV;
 	}
-
-	rc = aperture_remove_conflicting_pci_devices(dev, "s3fb");
-	if (rc)
-		return rc;
 
 	/* Allocate and fill driver data structure */
 	info = framebuffer_alloc(sizeof(struct s3fb_info), &(dev->dev));

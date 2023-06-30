@@ -12,12 +12,12 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 
-static const struct clk_parent_data aux_parents[] = {
-	{ .fw_name = "pll8_vote", .name = "pll8_vote" },
-	{ .fw_name = "pxo", .name = "pxo_board" },
+static const char *aux_parents[] = {
+	"pll8_vote",
+	"pxo",
 };
 
-static const u32 aux_parent_map[] = {
+static unsigned int aux_parent_map[] = {
 	3,
 	0,
 };
@@ -32,15 +32,17 @@ MODULE_DEVICE_TABLE(of, kpss_xcc_match_table);
 static int kpss_xcc_driver_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *id;
+	struct clk *clk;
+	struct resource *res;
 	void __iomem *base;
-	struct clk_hw *hw;
 	const char *name;
 
 	id = of_match_device(kpss_xcc_match_table, &pdev->dev);
 	if (!id)
 		return -ENODEV;
 
-	base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -55,16 +57,24 @@ static int kpss_xcc_driver_probe(struct platform_device *pdev)
 		base += 0x28;
 	}
 
-	hw = devm_clk_hw_register_mux_parent_data_table(&pdev->dev, name, aux_parents,
-							ARRAY_SIZE(aux_parents), 0,
-							base, 0, 0x3,
-							0, aux_parent_map, NULL);
+	clk = clk_register_mux_table(&pdev->dev, name, aux_parents,
+				     ARRAY_SIZE(aux_parents), 0, base, 0, 0x3,
+				     0, aux_parent_map, NULL);
 
-	return PTR_ERR_OR_ZERO(hw);
+	platform_set_drvdata(pdev, clk);
+
+	return PTR_ERR_OR_ZERO(clk);
+}
+
+static int kpss_xcc_driver_remove(struct platform_device *pdev)
+{
+	clk_unregister_mux(platform_get_drvdata(pdev));
+	return 0;
 }
 
 static struct platform_driver kpss_xcc_driver = {
 	.probe = kpss_xcc_driver_probe,
+	.remove = kpss_xcc_driver_remove,
 	.driver = {
 		.name = "kpss-xcc",
 		.of_match_table = kpss_xcc_match_table,

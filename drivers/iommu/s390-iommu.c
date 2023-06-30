@@ -39,7 +39,7 @@ static struct s390_domain *to_s390_domain(struct iommu_domain *dom)
 	return container_of(dom, struct s390_domain, domain);
 }
 
-static bool s390_iommu_capable(struct device *dev, enum iommu_cap cap)
+static bool s390_iommu_capable(enum iommu_cap cap)
 {
 	switch (cap) {
 	case IOMMU_CAP_CACHE_COHERENCY:
@@ -79,34 +79,8 @@ static void s390_domain_free(struct iommu_domain *domain)
 {
 	struct s390_domain *s390_domain = to_s390_domain(domain);
 
-	WARN_ON(!list_empty(&s390_domain->devices));
 	dma_cleanup_tables(s390_domain->dma_table);
 	kfree(s390_domain);
-}
-
-static void __s390_iommu_detach_device(struct zpci_dev *zdev)
-{
-	struct s390_domain *s390_domain = zdev->s390_domain;
-	struct s390_domain_device *domain_device, *tmp;
-	unsigned long flags;
-
-	if (!s390_domain)
-		return;
-
-	spin_lock_irqsave(&s390_domain->list_lock, flags);
-	list_for_each_entry_safe(domain_device, tmp, &s390_domain->devices,
-				 list) {
-		if (domain_device->zdev == zdev) {
-			list_del(&domain_device->list);
-			kfree(domain_device);
-			break;
-		}
-	}
-	spin_unlock_irqrestore(&s390_domain->list_lock, flags);
-
-	zpci_unregister_ioat(zdev, 0);
-	zdev->s390_domain = NULL;
-	zdev->dma_table = NULL;
 }
 
 static int s390_iommu_attach_device(struct iommu_domain *domain,
@@ -116,7 +90,7 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 	struct zpci_dev *zdev = to_zpci_dev(dev);
 	struct s390_domain_device *domain_device;
 	unsigned long flags;
-	int cc, rc = 0;
+	int rc;
 
 	if (!zdev)
 		return -ENODEV;
@@ -125,18 +99,14 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 	if (!domain_device)
 		return -ENOMEM;
 
-	if (zdev->s390_domain)
-		__s390_iommu_detach_device(zdev);
-	else if (zdev->dma_table)
+	if (zdev->dma_table)
 		zpci_dma_exit_device(zdev);
 
-	cc = zpci_register_ioat(zdev, 0, zdev->start_dma, zdev->end_dma,
-				virt_to_phys(s390_domain->dma_table));
-	if (cc) {
-		rc = -EIO;
-		goto out_free;
-	}
 	zdev->dma_table = s390_domain->dma_table;
+	rc = zpci_register_ioat(zdev, 0, zdev->start_dma, zdev->end_dma,
+				(u64) zdev->dma_table);
+	if (rc)
+		goto out_restore;
 
 	spin_lock_irqsave(&s390_domain->list_lock, flags);
 	/* First device defines the DMA range limits */
@@ -147,9 +117,9 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 	/* Allow only devices with identical DMA range limits */
 	} else if (domain->geometry.aperture_start != zdev->start_dma ||
 		   domain->geometry.aperture_end != zdev->end_dma) {
-		spin_unlock_irqrestore(&s390_domain->list_lock, flags);
 		rc = -EINVAL;
-		goto out_unregister;
+		spin_unlock_irqrestore(&s390_domain->list_lock, flags);
+		goto out_restore;
 	}
 	domain_device->zdev = zdev;
 	zdev->s390_domain = s390_domain;
@@ -158,10 +128,8 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 
 	return 0;
 
-out_unregister:
-	zpci_unregister_ioat(zdev, 0);
-	zdev->dma_table = NULL;
-out_free:
+out_restore:
+	zpci_dma_init_device(zdev);
 	kfree(domain_device);
 
 	return rc;
@@ -170,22 +138,37 @@ out_free:
 static void s390_iommu_detach_device(struct iommu_domain *domain,
 				     struct device *dev)
 {
+	struct s390_domain *s390_domain = to_s390_domain(domain);
 	struct zpci_dev *zdev = to_zpci_dev(dev);
+	struct s390_domain_device *domain_device, *tmp;
+	unsigned long flags;
+	int found = 0;
 
-	WARN_ON(zdev->s390_domain != to_s390_domain(domain));
+	if (!zdev)
+		return;
 
-	__s390_iommu_detach_device(zdev);
-	zpci_dma_init_device(zdev);
+	spin_lock_irqsave(&s390_domain->list_lock, flags);
+	list_for_each_entry_safe(domain_device, tmp, &s390_domain->devices,
+				 list) {
+		if (domain_device->zdev == zdev) {
+			list_del(&domain_device->list);
+			kfree(domain_device);
+			found = 1;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&s390_domain->list_lock, flags);
+
+	if (found) {
+		zdev->s390_domain = NULL;
+		zpci_unregister_ioat(zdev, 0);
+		zpci_dma_init_device(zdev);
+	}
 }
 
 static struct iommu_device *s390_iommu_probe_device(struct device *dev)
 {
-	struct zpci_dev *zdev;
-
-	if (!dev_is_pci(dev))
-		return ERR_PTR(-ENODEV);
-
-	zdev = to_zpci_dev(dev);
+	struct zpci_dev *zdev = to_zpci_dev(dev);
 
 	return &zdev->iommu_dev;
 }
@@ -193,21 +176,32 @@ static struct iommu_device *s390_iommu_probe_device(struct device *dev)
 static void s390_iommu_release_device(struct device *dev)
 {
 	struct zpci_dev *zdev = to_zpci_dev(dev);
+	struct iommu_domain *domain;
 
 	/*
-	 * release_device is expected to detach any domain currently attached
-	 * to the device, but keep it attached to other devices in the group.
+	 * This is a workaround for a scenario where the IOMMU API common code
+	 * "forgets" to call the detach_dev callback: After binding a device
+	 * to vfio-pci and completing the VFIO_SET_IOMMU ioctl (which triggers
+	 * the attach_dev), removing the device via
+	 * "echo 1 > /sys/bus/pci/devices/.../remove" won't trigger detach_dev,
+	 * only release_device will be called via the BUS_NOTIFY_REMOVED_DEVICE
+	 * notifier.
+	 *
+	 * So let's call detach_dev from here if it hasn't been called before.
 	 */
-	if (zdev)
-		__s390_iommu_detach_device(zdev);
+	if (zdev && zdev->s390_domain) {
+		domain = iommu_get_domain_for_dev(dev);
+		if (domain)
+			s390_iommu_detach_device(domain, dev);
+	}
 }
 
 static int s390_iommu_update_trans(struct s390_domain *s390_domain,
-				   phys_addr_t pa, dma_addr_t dma_addr,
+				   unsigned long pa, dma_addr_t dma_addr,
 				   size_t size, int flags)
 {
 	struct s390_domain_device *domain_device;
-	phys_addr_t page_addr = pa & PAGE_MASK;
+	u8 *page_addr = (u8 *) (pa & PAGE_MASK);
 	dma_addr_t start_dma_addr = dma_addr;
 	unsigned long irq_flags, nr_pages, i;
 	unsigned long *entry;
@@ -272,7 +266,7 @@ static int s390_iommu_map(struct iommu_domain *domain, unsigned long iova,
 	if (!(prot & IOMMU_WRITE))
 		flags |= ZPCI_TABLE_PROTECTED;
 
-	rc = s390_iommu_update_trans(s390_domain, paddr, iova,
+	rc = s390_iommu_update_trans(s390_domain, (unsigned long) paddr, iova,
 				     size, flags);
 
 	return rc;
@@ -322,7 +316,7 @@ static size_t s390_iommu_unmap(struct iommu_domain *domain,
 	if (!paddr)
 		return 0;
 
-	rc = s390_iommu_update_trans(s390_domain, paddr, iova,
+	rc = s390_iommu_update_trans(s390_domain, (unsigned long) paddr, iova,
 				     size, flags);
 	if (rc)
 		return 0;
@@ -339,7 +333,9 @@ int zpci_init_iommu(struct zpci_dev *zdev)
 	if (rc)
 		goto out_err;
 
-	rc = iommu_device_register(&zdev->iommu_dev, &s390_iommu_ops, NULL);
+	iommu_device_set_ops(&zdev->iommu_dev, &s390_iommu_ops);
+
+	rc = iommu_device_register(&zdev->iommu_dev);
 	if (rc)
 		goto out_sysfs;
 
@@ -361,16 +357,20 @@ void zpci_destroy_iommu(struct zpci_dev *zdev)
 static const struct iommu_ops s390_iommu_ops = {
 	.capable = s390_iommu_capable,
 	.domain_alloc = s390_domain_alloc,
+	.domain_free = s390_domain_free,
+	.attach_dev = s390_iommu_attach_device,
+	.detach_dev = s390_iommu_detach_device,
+	.map = s390_iommu_map,
+	.unmap = s390_iommu_unmap,
+	.iova_to_phys = s390_iommu_iova_to_phys,
 	.probe_device = s390_iommu_probe_device,
 	.release_device = s390_iommu_release_device,
 	.device_group = generic_device_group,
 	.pgsize_bitmap = S390_IOMMU_PGSIZES,
-	.default_domain_ops = &(const struct iommu_domain_ops) {
-		.attach_dev	= s390_iommu_attach_device,
-		.detach_dev	= s390_iommu_detach_device,
-		.map		= s390_iommu_map,
-		.unmap		= s390_iommu_unmap,
-		.iova_to_phys	= s390_iommu_iova_to_phys,
-		.free		= s390_domain_free,
-	}
 };
+
+static int __init s390_iommu_init(void)
+{
+	return bus_set_iommu(&pci_bus_type, &s390_iommu_ops);
+}
+subsys_initcall(s390_iommu_init);

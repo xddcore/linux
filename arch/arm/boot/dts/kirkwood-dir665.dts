@@ -78,7 +78,7 @@
 
 		spi@10600 {
 			status = "okay";
-			flash@0 {
+			m25p80@0 {
 				#address-cells = <1>;
 				#size-cells = <1>;
 				compatible = "mxicy,mx25l12805d", "jedec,spi-nor";

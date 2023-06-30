@@ -1,12 +1,13 @@
-/* SPDX-License-Identifier: MIT */
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * Copyright © 2019 Intel Corporation
  */
 
 #ifndef INTEL_RC6_H
 #define INTEL_RC6_H
 
-#include "i915_reg_defs.h"
+#include "i915_reg.h"
 
 struct intel_engine_cs;
 struct intel_rc6;

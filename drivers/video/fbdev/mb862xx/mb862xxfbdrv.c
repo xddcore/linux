@@ -10,7 +10,6 @@
 
 #undef DEBUG
 
-#include <linux/aperture.h>
 #include <linux/fb.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
@@ -19,8 +18,6 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #if defined(CONFIG_OF)
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #endif
 #include "mb862xxfb.h"
@@ -545,8 +542,8 @@ static int mb862xxfb_init_fbinfo(struct fb_info *fbi)
 /*
  * show some display controller and cursor registers
  */
-static ssize_t dispregs_show(struct device *dev,
-			     struct device_attribute *attr, char *buf)
+static ssize_t mb862xxfb_show_dispregs(struct device *dev,
+				       struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fbi = dev_get_drvdata(dev);
 	struct mb862xxfb_par *par = fbi->par;
@@ -580,7 +577,7 @@ static ssize_t dispregs_show(struct device *dev,
 	return ptr - buf;
 }
 
-static DEVICE_ATTR_RO(dispregs);
+static DEVICE_ATTR(dispregs, 0444, mb862xxfb_show_dispregs, NULL);
 
 static irqreturn_t mb862xx_intr(int irq, void *dev_id)
 {
@@ -693,7 +690,7 @@ static int of_platform_mb862xx_probe(struct platform_device *ofdev)
 	par->dev = dev;
 
 	par->irq = irq_of_parse_and_map(np, 0);
-	if (!par->irq) {
+	if (par->irq == NO_IRQ) {
 		dev_err(dev, "failed to map irq\n");
 		ret = -ENODEV;
 		goto fbrel;
@@ -999,10 +996,6 @@ static int mb862xx_pci_probe(struct pci_dev *pdev,
 	struct fb_info *info;
 	struct device *dev = &pdev->dev;
 	int ret;
-
-	ret = aperture_remove_conflicting_pci_devices(pdev, "mb862xxfb");
-	if (ret)
-		return ret;
 
 	ret = pci_enable_device(pdev);
 	if (ret < 0) {

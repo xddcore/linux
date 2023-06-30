@@ -55,6 +55,8 @@ allOf:
     then:
       properties:
         clocks:
+          minItems: 7
+          maxItems: 7
           items:
             - description: 32k osc
             - description: 25m osc
@@ -64,6 +66,8 @@ allOf:
             - description: ext3 clock input
             - description: ext4 clock input
         clock-names:
+          minItems: 7
+          maxItems: 7
           items:
             - const: ckil
             - const: osc_25m

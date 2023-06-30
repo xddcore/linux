@@ -658,7 +658,7 @@ static void native_machine_emergency_restart(void)
 			break;
 
 		case BOOT_TRIPLE:
-			idt_invalidate();
+			idt_invalidate(NULL);
 			__asm__ __volatile__("int3");
 
 			/* We're probably dead after this, but... */
@@ -735,10 +735,10 @@ static void native_machine_halt(void)
 
 static void native_machine_power_off(void)
 {
-	if (kernel_can_power_off()) {
+	if (pm_power_off) {
 		if (!reboot_force)
 			machine_shutdown();
-		do_kernel_power_off();
+		pm_power_off();
 	}
 	/* A fallback in case there is no PM info available */
 	tboot_shutdown(TB_SHUTDOWN_HALT);

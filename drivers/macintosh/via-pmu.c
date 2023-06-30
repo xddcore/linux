@@ -18,7 +18,7 @@
  *    a sleep or a freq. switch
  *
  */
-#include <linux/stdarg.h>
+#include <stdarg.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -59,6 +59,7 @@
 #include <asm/pmac_feature.h>
 #include <asm/pmac_pfunc.h>
 #include <asm/pmac_low_i2c.h>
+#include <asm/prom.h>
 #include <asm/mmu_context.h>
 #include <asm/cputable.h>
 #include <asm/time.h>
@@ -160,7 +161,7 @@ static unsigned char __iomem *gpio_reg;
 static int gpio_irq = 0;
 static int gpio_irq_enabled = -1;
 static volatile int pmu_suspended;
-static DEFINE_SPINLOCK(pmu_lock);
+static spinlock_t pmu_lock;
 static u8 pmu_intr_mask;
 static int pmu_version;
 static int drop_interrupts;
@@ -179,13 +180,14 @@ static struct proc_dir_entry *proc_pmu_options;
 static int option_server_mode;
 
 int pmu_battery_count;
-static int pmu_cur_battery;
+int pmu_cur_battery;
 unsigned int pmu_power_flags = PMU_PWR_AC_PRESENT;
 struct pmu_battery_info pmu_batteries[PMU_MAX_BATTERIES];
 static int query_batt_timer = BATTERY_POLLING_COUNT;
 static struct adb_request batt_req;
 static struct proc_dir_entry *proc_pmu_batt[PMU_MAX_BATTERIES];
 
+int __fake_sleep;
 int asleep;
 
 #ifdef CONFIG_ADB
@@ -304,6 +306,8 @@ int __init find_via_pmu(void)
 		goto fail;
 	}
 
+	spin_lock_init(&pmu_lock);
+
 	pmu_has_adb = 1;
 
 	pmu_intr_mask =	PMU_INT_PCEJECT |
@@ -384,6 +388,8 @@ int __init find_via_pmu(void)
 		return 0;
 
 	pmu_kind = PMU_UNKNOWN;
+
+	spin_lock_init(&pmu_lock);
 
 	pmu_has_adb = 1;
 
@@ -1827,7 +1833,6 @@ pmu_present(void)
  */
  
 static u32 save_via[8];
-static int __fake_sleep;
 
 static void
 save_via_state(void)

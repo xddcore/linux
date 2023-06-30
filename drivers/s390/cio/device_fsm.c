@@ -47,7 +47,7 @@ static void ccw_timeout_log(struct ccw_device *cdev)
 	orb = &private->orb;
 	cc = stsch(sch->schid, &schib);
 
-	printk(KERN_WARNING "cio: ccw device timeout occurred at %lx, "
+	printk(KERN_WARNING "cio: ccw device timeout occurred at %llx, "
 	       "device information:\n", get_tod_clock());
 	printk(KERN_WARNING "cio: orb:\n");
 	print_hex_dump(KERN_WARNING, "cio:  ", DUMP_PREFIX_NONE, 16, 1,
@@ -113,10 +113,16 @@ ccw_device_timeout(struct timer_list *t)
 void
 ccw_device_set_timeout(struct ccw_device *cdev, int expires)
 {
-	if (expires == 0)
+	if (expires == 0) {
 		del_timer(&cdev->private->timer);
-	else
-		mod_timer(&cdev->private->timer, jiffies + expires);
+		return;
+	}
+	if (timer_pending(&cdev->private->timer)) {
+		if (mod_timer(&cdev->private->timer, jiffies + expires))
+			return;
+	}
+	cdev->private->timer.expires = jiffies + expires;
+	add_timer(&cdev->private->timer);
 }
 
 int
@@ -215,6 +221,12 @@ ccw_device_recog_done(struct ccw_device *cdev, int state)
 	    (state == DEV_STATE_NOT_OPER || state == DEV_STATE_BOXED)) {
 		cdev->private->flags.recog_done = 1;
 		cdev->private->state = DEV_STATE_DISCONNECTED;
+		wake_up(&cdev->private->wait_q);
+		return;
+	}
+	if (cdev->private->flags.resuming) {
+		cdev->private->state = state;
+		cdev->private->flags.recog_done = 1;
 		wake_up(&cdev->private->wait_q);
 		return;
 	}

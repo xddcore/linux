@@ -201,8 +201,7 @@
 #include <linux/kmod.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
-#include <linux/of.h>
-
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
 #include <asm/sections.h>
@@ -434,7 +433,7 @@ struct pm121_sys_state {
 	struct wf_pid_state	pid;
 };
 
-static struct pm121_sys_state *pm121_sys_state[N_LOOPS] = {};
+struct pm121_sys_state *pm121_sys_state[N_LOOPS] = {};
 
 /*
  * ****** CPU Fans Control Loop ******

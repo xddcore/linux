@@ -76,7 +76,6 @@
 #include <linux/blk-mq.h>
 #include "blk-rq-qos.h"
 #include "blk-stat.h"
-#include "blk-cgroup.h"
 #include "blk.h"
 
 #define DEFAULT_SCALE_COOKIE 1000000U
@@ -292,7 +291,7 @@ static void __blkcg_iolatency_throttle(struct rq_qos *rqos,
 	unsigned use_delay = atomic_read(&lat_to_blkg(iolat)->use_delay);
 
 	if (use_delay)
-		blkcg_schedule_throttle(rqos->q->disk, use_memdelay);
+		blkcg_schedule_throttle(rqos->q, use_memdelay);
 
 	/*
 	 * To avoid priority inversions we want to just take a slot if we are
@@ -401,6 +400,7 @@ static void check_scale_change(struct iolatency_grp *iolat)
 	unsigned int cur_cookie;
 	unsigned int our_cookie = atomic_read(&iolat->scale_cookie);
 	u64 scale_lat;
+	unsigned int old;
 	int direction = 0;
 
 	if (lat_to_blkg(iolat)->parent == NULL)
@@ -421,10 +421,11 @@ static void check_scale_change(struct iolatency_grp *iolat)
 	else
 		return;
 
-	if (!atomic_try_cmpxchg(&iolat->scale_cookie, &our_cookie, cur_cookie)) {
-		/* Somebody beat us to the punch, just bail. */
+	old = atomic_cmpxchg(&iolat->scale_cookie, our_cookie, cur_cookie);
+
+	/* Somebody beat us to the punch, just bail. */
+	if (old != our_cookie)
 		return;
-	}
 
 	if (direction < 0 && iolat->min_lat_nsec) {
 		u64 samples_thresh;
@@ -600,7 +601,7 @@ static void blkcg_iolatency_done_bio(struct rq_qos *rqos, struct bio *bio)
 	int inflight = 0;
 
 	blkg = bio->bi_blkg;
-	if (!blkg || !bio_flagged(bio, BIO_QOS_THROTTLED))
+	if (!blkg || !bio_flagged(bio, BIO_TRACKED))
 		return;
 
 	iolat = blkg_to_lat(bio->bi_blkg);
@@ -631,8 +632,8 @@ static void blkcg_iolatency_done_bio(struct rq_qos *rqos, struct bio *bio)
 			window_start = atomic64_read(&iolat->window_start);
 			if (now > window_start &&
 			    (now - window_start) >= iolat->cur_win_nsec) {
-				if (atomic64_try_cmpxchg(&iolat->window_start,
-							 &window_start, now))
+				if (atomic64_cmpxchg(&iolat->window_start,
+					     window_start, now) == window_start)
 					iolatency_check_latencies(iolat, now);
 			}
 		}
@@ -756,9 +757,8 @@ static void blkiolatency_enable_work_fn(struct work_struct *work)
 	}
 }
 
-int blk_iolatency_init(struct gendisk *disk)
+int blk_iolatency_init(struct request_queue *q)
 {
-	struct request_queue *q = disk->queue;
 	struct blk_iolatency *blkiolat;
 	struct rq_qos *rqos;
 	int ret;
@@ -772,23 +772,19 @@ int blk_iolatency_init(struct gendisk *disk)
 	rqos->ops = &blkcg_iolatency_ops;
 	rqos->q = q;
 
-	ret = rq_qos_add(q, rqos);
-	if (ret)
-		goto err_free;
+	rq_qos_add(q, rqos);
+
 	ret = blkcg_activate_policy(q, &blkcg_policy_iolatency);
-	if (ret)
-		goto err_qos_del;
+	if (ret) {
+		rq_qos_del(q, rqos);
+		kfree(blkiolat);
+		return ret;
+	}
 
 	timer_setup(&blkiolat->timer, blkiolatency_timer_fn, 0);
 	INIT_WORK(&blkiolat->enable_work, blkiolatency_enable_work_fn);
 
 	return 0;
-
-err_qos_del:
-	rq_qos_del(q, rqos);
-err_free:
-	kfree(blkiolat);
-	return ret;
 }
 
 static void iolatency_set_min_lat_nsec(struct blkcg_gq *blkg, u64 val)
@@ -906,7 +902,8 @@ static int iolatency_print_limit(struct seq_file *sf, void *v)
 	return 0;
 }
 
-static void iolatency_ssd_stat(struct iolatency_grp *iolat, struct seq_file *s)
+static size_t iolatency_ssd_stat(struct iolatency_grp *iolat, char *buf,
+				 size_t size)
 {
 	struct latency_stat stat;
 	int cpu;
@@ -921,37 +918,38 @@ static void iolatency_ssd_stat(struct iolatency_grp *iolat, struct seq_file *s)
 	preempt_enable();
 
 	if (iolat->rq_depth.max_depth == UINT_MAX)
-		seq_printf(s, " missed=%llu total=%llu depth=max",
-			(unsigned long long)stat.ps.missed,
-			(unsigned long long)stat.ps.total);
-	else
-		seq_printf(s, " missed=%llu total=%llu depth=%u",
-			(unsigned long long)stat.ps.missed,
-			(unsigned long long)stat.ps.total,
-			iolat->rq_depth.max_depth);
+		return scnprintf(buf, size, " missed=%llu total=%llu depth=max",
+				 (unsigned long long)stat.ps.missed,
+				 (unsigned long long)stat.ps.total);
+	return scnprintf(buf, size, " missed=%llu total=%llu depth=%u",
+			 (unsigned long long)stat.ps.missed,
+			 (unsigned long long)stat.ps.total,
+			 iolat->rq_depth.max_depth);
 }
 
-static void iolatency_pd_stat(struct blkg_policy_data *pd, struct seq_file *s)
+static size_t iolatency_pd_stat(struct blkg_policy_data *pd, char *buf,
+				size_t size)
 {
 	struct iolatency_grp *iolat = pd_to_lat(pd);
 	unsigned long long avg_lat;
 	unsigned long long cur_win;
 
 	if (!blkcg_debug_stats)
-		return;
+		return 0;
 
 	if (iolat->ssd)
-		return iolatency_ssd_stat(iolat, s);
+		return iolatency_ssd_stat(iolat, buf, size);
 
 	avg_lat = div64_u64(iolat->lat_avg, NSEC_PER_USEC);
 	cur_win = div64_u64(iolat->cur_win_nsec, NSEC_PER_MSEC);
 	if (iolat->rq_depth.max_depth == UINT_MAX)
-		seq_printf(s, " depth=max avg_lat=%llu win=%llu",
-			avg_lat, cur_win);
-	else
-		seq_printf(s, " depth=%u avg_lat=%llu win=%llu",
-			iolat->rq_depth.max_depth, avg_lat, cur_win);
+		return scnprintf(buf, size, " depth=max avg_lat=%llu win=%llu",
+				 avg_lat, cur_win);
+
+	return scnprintf(buf, size, " depth=%u avg_lat=%llu win=%llu",
+			 iolat->rq_depth.max_depth, avg_lat, cur_win);
 }
+
 
 static struct blkg_policy_data *iolatency_pd_alloc(gfp_t gfp,
 						   struct request_queue *q,

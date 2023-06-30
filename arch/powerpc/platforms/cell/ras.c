@@ -12,11 +12,11 @@
 #include <linux/reboot.h>
 #include <linux/kexec.h>
 #include <linux/crash_dump.h>
-#include <linux/of.h>
 
 #include <asm/kexec.h>
 #include <asm/reg.h>
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/rtas.h>
 #include <asm/cell-regs.h>
@@ -49,7 +49,7 @@ static void dump_fir(int cpu)
 
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_system_error_exception)
+void cbe_system_error_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 
@@ -58,7 +58,7 @@ DEFINE_INTERRUPT_HANDLER(cbe_system_error_exception)
 	dump_stack();
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_maintenance_exception)
+void cbe_maintenance_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 
@@ -70,7 +70,7 @@ DEFINE_INTERRUPT_HANDLER(cbe_maintenance_exception)
 	dump_stack();
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_thermal_exception)
+void cbe_thermal_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 

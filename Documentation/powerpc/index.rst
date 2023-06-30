@@ -17,7 +17,6 @@ powerpc
     dawr-power9
     dscr
     eeh-pci-error-recovery
-    elf_hwcaps
     elfnote
     firmware-assisted-dump
     hvcs
@@ -35,8 +34,6 @@ powerpc
     ultravisor
     vas-api
     vcpudispatch_stats
-
-    features
 
 .. only::  subproject and html
 

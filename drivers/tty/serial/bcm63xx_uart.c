@@ -294,7 +294,9 @@ static void bcm_uart_do_rx(struct uart_port *port)
 
 	} while (--max_count);
 
+	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tty_port);
+	spin_lock(&port->lock);
 }
 
 /*
@@ -492,8 +494,9 @@ static void bcm_uart_shutdown(struct uart_port *port)
 /*
  * serial core request to change current uart setting
  */
-static void bcm_uart_set_termios(struct uart_port *port, struct ktermios *new,
-				 const struct ktermios *old)
+static void bcm_uart_set_termios(struct uart_port *port,
+				 struct ktermios *new,
+				 struct ktermios *old)
 {
 	unsigned int ctl, baud, quot, ier;
 	unsigned long flags;
@@ -680,7 +683,7 @@ static void wait_for_xmitr(struct uart_port *port)
 /*
  * output given char
  */
-static void bcm_console_putchar(struct uart_port *port, unsigned char ch)
+static void bcm_console_putchar(struct uart_port *port, int ch)
 {
 	wait_for_xmitr(port);
 	bcm_uart_writel(port, ch, UART_FIFO_REG);
@@ -803,7 +806,7 @@ static struct uart_driver bcm_uart_driver = {
  */
 static int bcm_uart_probe(struct platform_device *pdev)
 {
-	struct resource *res_mem;
+	struct resource *res_mem, *res_irq;
 	struct uart_port *port;
 	struct clk *clk;
 	int ret;
@@ -832,10 +835,9 @@ static int bcm_uart_probe(struct platform_device *pdev)
 	if (IS_ERR(port->membase))
 		return PTR_ERR(port->membase);
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		return ret;
-	port->irq = ret;
+	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!res_irq)
+		return -ENODEV;
 
 	clk = clk_get(&pdev->dev, "refclk");
 	if (IS_ERR(clk) && pdev->dev.of_node)
@@ -845,6 +847,7 @@ static int bcm_uart_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	port->iotype = UPIO_MEM;
+	port->irq = res_irq->start;
 	port->ops = &bcm_uart_ops;
 	port->flags = UPF_BOOT_AUTOCONF;
 	port->dev = &pdev->dev;

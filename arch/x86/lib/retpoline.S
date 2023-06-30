@@ -31,7 +31,6 @@
 	.align RETPOLINE_THUNK_SIZE
 SYM_INNER_LABEL(__x86_indirect_thunk_\reg, SYM_L_GLOBAL)
 	UNWIND_HINT_EMPTY
-	ANNOTATE_NOENDBR
 
 	ALTERNATIVE_2 __stringify(RETPOLINE \reg), \
 		      __stringify(lfence; ANNOTATE_RETPOLINE_SAFE; jmp *%\reg; int3), X86_FEATURE_RETPOLINE_LFENCE, \
@@ -87,8 +86,8 @@ SYM_CODE_END(__x86_indirect_thunk_array)
  */
 	.align 64
 	.skip 63, 0xcc
-SYM_START(zen_untrain_ret, SYM_L_GLOBAL, SYM_A_NONE)
-	ANNOTATE_NOENDBR
+SYM_FUNC_START_NOALIGN(zen_untrain_ret);
+
 	/*
 	 * As executed from zen_untrain_ret, this is:
 	 *

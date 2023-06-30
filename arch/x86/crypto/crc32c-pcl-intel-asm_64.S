@@ -53,7 +53,7 @@
 .endm
 
 .macro JMPTBL_ENTRY i
-.quad crc_\i
+.word crc_\i - crc_array
 .endm
 
 .macro JNC_LESS_THAN j
@@ -168,7 +168,10 @@ continue_block:
 	xor     crc2, crc2
 
 	## branch into array
-	mov	jump_table(,%rax,8), %bufp
+	lea	jump_table(%rip), %bufp
+	movzwq  (%bufp, %rax, 2), len
+	lea	crc_array(%rip), %bufp
+	lea     (%bufp, len, 1), %bufp
 	JMP_NOSPEC bufp
 
 	################################################################
@@ -195,7 +198,6 @@ crc_array:
 .altmacro
 LABEL crc_ %i
 .noaltmacro
-	ENDBR
 	crc32q   -i*8(block_0), crc_init
 	crc32q   -i*8(block_1), crc1
 	crc32q   -i*8(block_2), crc2
@@ -205,7 +207,6 @@ LABEL crc_ %i
 .altmacro
 LABEL crc_ %i
 .noaltmacro
-	ENDBR
 	crc32q   -i*8(block_0), crc_init
 	crc32q   -i*8(block_1), crc1
 # SKIP  crc32  -i*8(block_2), crc2 ; Don't do this one yet
@@ -239,7 +240,6 @@ LABEL crc_ %i
 	################################################################
 
 LABEL crc_ 0
-	ENDBR
 	mov     tmp, len
 	cmp     $128*24, tmp
 	jae     full_block
