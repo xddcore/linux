@@ -8,7 +8,9 @@
 #include "suniv-f1c100s.dtsi"
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Xddcore Zero Board";
@@ -56,6 +58,32 @@
         pinctrl-0 = <&spi0_pc_pins>;
         status = "okay";
 };
+
+&i2c0 {
+        pinctrl-names = "default";
+        pinctrl-0 = <&i2c0_pins>;
+        status = "okay";
+
+		/* Accelerometer/gyroscope */
+		mpu6050@68 {
+			compatible = "invensense,mpu6050";
+			reg = <0x68>;
+			interrupt-parent = <&pio>;
+			interrupts = <4 3 IRQ_TYPE_EDGE_RISING>; /* PE3 */
+			vdd-supply = <&reg_vcc3v3>;
+			vddio-supply = <&reg_vcc3v3>;
+			mount-matrix = "-0.984807753012208",  /* x0 */
+		               	   "0",                   /* y0 */
+		               	   "-0.173648177666930",  /* z0 */
+		                   "0",                   /* x1 */
+		                   "-1",                  /* y1 */
+		                   "0",                   /* z1 */
+		                   "-0.173648177666930",  /* x2 */
+		                   "0",                   /* y2 */
+		                   "0.984807753012208";   /* z2 */
+		};
+};
+
 
 &codec {
     allwinner,audio-routing =

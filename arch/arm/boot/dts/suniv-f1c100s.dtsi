@@ -120,6 +120,32 @@
 			#size-cells = <0>;
 		};
 
+		i2c0: i2c@1C27000 { 
+			compatible = "allwinner,sun6i-a31-i2c"; 
+			reg = <0x01C27000 0x400>;
+			interrupts = <7>; 
+			clocks = <&ccu CLK_BUS_I2C0>;
+			resets = <&ccu RST_BUS_I2C0>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&i2c0_pins>; 
+			status = "disabled";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		i2c1: i2c@1C27400 { 
+			compatible = "allwinner,sun6i-a31-i2c"; 
+			reg = <0x01C27400 0x400>;
+			interrupts = <8>; 
+			clocks = <&ccu CLK_BUS_I2C0>;
+			resets = <&ccu RST_BUS_I2C0>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&i2c1_pins>; 
+			status = "disabled";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
 		mmc0: mmc@1c0f000 {
 			compatible = "allwinner,suniv-f1c100s-mmc",
 				     "allwinner,sun7i-a20-mmc";
@@ -197,6 +223,16 @@
 			uart0_pe_pins: uart0-pe-pins {
 				pins = "PE0", "PE1";
 				function = "uart0";
+			};
+
+			i2c0_pins: i2c0_pins {
+				pins = "PE11", "PE12";
+				function = "i2c0";
+			};
+
+			i2c1_pins: i2c1_pins {
+				pins = "PD5", "PD6";
+				function = "i2c1";
 			};
 		};
 
