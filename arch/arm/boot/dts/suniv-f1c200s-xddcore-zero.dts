@@ -98,3 +98,17 @@
 	pinctrl-0 = <&uart0_pe_pins>;
 	status = "okay";
 };
+
+&otg_sram {
+        status = "okay";
+};
+
+&usb_otg {
+        dr_mode = "otg"; /* otg / host / peripheral */
+        status = "okay";
+};
+
+&usbphy {
+       /* usb0_id_det-gpio = <&pio 4 2 GPIO_ACTIVE_HIGH>; PE2 */
+        status = "okay";
+};
