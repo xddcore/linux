@@ -82,69 +82,104 @@ enum st7789v_command {
  */
 static int init_display(struct fbtft_par *par)
 {
-	par->fbtftops.reset(par);
+	
+//	par->fbtftops.reset(par);
 
 	/* turn off sleep mode */
-	write_reg(par, MIPI_DCS_EXIT_SLEEP_MODE);
-	mdelay(120);
+//	write_reg(par, MIPI_DCS_EXIT_SLEEP_MODE);
+//	mdelay(120);
 
 	/* set pixel format to RGB-565 */
-	write_reg(par, MIPI_DCS_SET_PIXEL_FORMAT, MIPI_DCS_PIXEL_FMT_16BIT);
-	if (HSD20_IPS)
-		write_reg(par, PORCTRL, 0x05, 0x05, 0x00, 0x33, 0x33);
+//	write_reg(par, MIPI_DCS_SET_PIXEL_FORMAT, MIPI_DCS_PIXEL_FMT_16BIT);
+//	if (HSD20_IPS)
+//		write_reg(par, PORCTRL, 0x05, 0x05, 0x00, 0x33, 0x33);
 
-	else
-		write_reg(par, PORCTRL, 0x08, 0x08, 0x00, 0x22, 0x22);
+//	else
+//		write_reg(par, PORCTRL, 0x08, 0x08, 0x00, 0x22, 0x22);
 
 	/*
 	 * VGH = 13.26V
 	 * VGL = -10.43V
 	 */
-	if (HSD20_IPS)
-		write_reg(par, GCTRL, 0x75);
-	else
-		write_reg(par, GCTRL, 0x35);
+//	if (HSD20_IPS)
+//		write_reg(par, GCTRL, 0x75);
+//	else
+//		write_reg(par, GCTRL, 0x35);
 
 	/*
 	 * VDV and VRH register values come from command write
 	 * (instead of NVM)
 	 */
-	write_reg(par, VDVVRHEN, 0x01, 0xFF);
+//	write_reg(par, VDVVRHEN, 0x01, 0xFF);
 
 	/*
 	 * VAP =  4.1V + (VCOM + VCOM offset + 0.5 * VDV)
 	 * VAN = -4.1V + (VCOM + VCOM offset + 0.5 * VDV)
 	 */
-	if (HSD20_IPS)
-		write_reg(par, VRHS, 0x13);
-	else
-		write_reg(par, VRHS, 0x0B);
+//	if (HSD20_IPS)
+//		write_reg(par, VRHS, 0x13);
+//	else
+//		write_reg(par, VRHS, 0x0B);
 
 	/* VDV = 0V */
-	write_reg(par, VDVS, 0x20);
+//	write_reg(par, VDVS, 0x20);
 
 	/* VCOM = 0.9V */
-	if (HSD20_IPS)
-		write_reg(par, VCOMS, 0x22);
-	else
-		write_reg(par, VCOMS, 0x20);
+//	if (HSD20_IPS)
+//		write_reg(par, VCOMS, 0x22);
+//	else
+//		write_reg(par, VCOMS, 0x20);
 
 	/* VCOM offset = 0V */
-	write_reg(par, VCMOFSET, 0x20);
+//	write_reg(par, VCMOFSET, 0x20);
 
 	/*
 	 * AVDD = 6.8V
 	 * AVCL = -4.8V
 	 * VDS = 2.3V
 	 */
-	write_reg(par, PWCTRL1, 0xA4, 0xA1);
+//	write_reg(par, PWCTRL1, 0xA4, 0xA1);
 
-	write_reg(par, MIPI_DCS_SET_DISPLAY_ON);
+//	write_reg(par, MIPI_DCS_SET_DISPLAY_ON);
 
-	if (HSD20_IPS)
-		write_reg(par, MIPI_DCS_ENTER_INVERT_MODE);
+//	if (HSD20_IPS)
+//		write_reg(par, MIPI_DCS_ENTER_INVERT_MODE);
 
-	return 0;
+//	return 0;
+
+
+	//Below Init code for SHEN ZHEN SHI YAO YUAN HONG TECHNOLOGY(HP28008-DCT)
+	//2.8'' ISP Touch Screen(320*240 RGB565)
+	//xddcore add 23/08/06 for xddcore zero linux board
+//-------------ST7789V Reset-----------//	
+	par->fbtftops.reset(par);
+//-------------ST7789V turn off sleep mode-----------//
+    write_reg(par, MIPI_DCS_EXIT_SLEEP_MODE);
+	msleep(200);
+//-------------ST7789V Display Setting-----------//
+    write_reg(par,0x36,0x00); // Display Direction Set
+    write_reg(par,0x3A,0x05); //65k mode
+//-------------ST7789V Frame rate setting-----------//
+    write_reg(par,0xb2,0x0c,0x0c,0x00,0x33,0x33);
+    write_reg(par,0xb7,0x35);
+//--------------ST7789V Power setting---------------//
+    write_reg(par,0xbb,0x20);
+    write_reg(par,0xc0,0x2c);
+    write_reg(par,0xc2,0x01);
+    write_reg(par,0xc3,0x0b);
+    write_reg(par,0xc4,0x20);
+    write_reg(par,0xc6,0x0f);
+    write_reg(par,0xd0,0xa4,0xa1);
+//--------------ST7789V gamma setting---------------//	
+    //gamma setting
+    write_reg(par,0xe0,0xd0,0x03,0x09,0x0e,0x11,0x3d,0x47,0x55,0x53,0x1a,0x16,0x14,0x1f,0x22);
+    write_reg(par,0xe1,0xd0,0x02,0x08,0x0d,0x12,0x2c,0x43,0x55,0x53,0x11,0x1b,0x19,0x20,0x22);
+	//White Background and Black Front
+    //write_reg(par,0x20);
+	//Black Background and White Front
+	write_reg(par,0x21);
+    write_reg(par,0x29);//begin show
+    return 0;
 }
 
 /**
