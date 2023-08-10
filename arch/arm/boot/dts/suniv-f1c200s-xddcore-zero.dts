@@ -114,9 +114,9 @@
 			compatible = "goodix,gt911";
 			reg = <0x5d>;
 			interrupt-parent = <&pio>;
-			interrupts = <3 3 IRQ_TYPE_EDGE_FALLING>; /* EINT3 (PD3) */
-			irq-gpios = <&pio 3 3 GPIO_ACTIVE_HIGH>; /* INT (PD3) */
-			reset-gpios = <&pio 3 4 GPIO_ACTIVE_HIGH>; /* RST (PD4) */
+			interrupts = <3 10 IRQ_TYPE_EDGE_FALLING>; /* EINT3 (PD10) */
+			irq-gpios = <&pio 3 10 GPIO_ACTIVE_HIGH>; /* INT (PD10) */
+			reset-gpios = <&pio 3 11 GPIO_ACTIVE_HIGH>; /* RST (PD11) */
 			touchscreen-swapped-x-y;
 			touchscreen-inverted-y;
 			};
